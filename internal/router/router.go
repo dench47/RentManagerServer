@@ -23,7 +23,21 @@ func Setup(cfg *config.Config) *gin.Engine {
 	// Init handlers
 	callCheckSvc := service.NewCallCheckService(getEnvDefault("CALLCHECK_API_ID", "stub"))
 	s3Svc := service.NewS3Service(cfg.S3)
-	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, cfg.JWT)
+
+	// FCM
+	var fcmSvc *service.FCMService
+	fcmCredsPath := os.Getenv("FCM_CREDENTIALS_PATH")
+	if fcmCredsPath != "" {
+		data, err := os.ReadFile(fcmCredsPath)
+		if err == nil {
+			fcmSvc, err = service.NewFCMService(data)
+			if err != nil {
+				panic("FCM init failed: " + err.Error())
+			}
+		}
+	}
+
+	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, cfg.JWT)
 	propertyHandler := handler.NewPropertyHandler()
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler()
@@ -61,6 +75,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/auth/confirm_phone_change", authHandler.ConfirmPhoneChange)
 		protected.POST("/auth/set_password", authHandler.SetPassword)
 		protected.POST("/auth/logout_all", authHandler.LogoutAll)
+		protected.POST("/auth/register_device", authHandler.RegisterDevice)
 		protected.DELETE("/auth/account", authHandler.DeleteAccount)
 
 		// Users

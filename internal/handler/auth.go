@@ -53,11 +53,12 @@ type AuthResponse struct {
 type AuthHandler struct {
 	callCheck *service.CallCheckService
 	s3        *service.S3Service
+	fcm       *service.FCMService
 	jwtCfg    config.JWTConfig
 }
 
-func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, jwtCfg config.JWTConfig) *AuthHandler {
-	return &AuthHandler{callCheck: callCheck, s3: s3, jwtCfg: jwtCfg}
+func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, jwtCfg config.JWTConfig) *AuthHandler {
+	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, jwtCfg: jwtCfg}
 }
 
 func (h *AuthHandler) SaveName(c *gin.Context) {
@@ -385,7 +386,7 @@ func (h *AuthHandler) VerifyPassword(c *gin.Context) {
 	}
 
 	// Успешный вход — сбрасываем счётчик
-	database.RDB.Del(c, "pin_attempts:" + req.Phone)
+	database.RDB.Del(c, "pin_attempts:"+req.Phone)
 
 	tokenStr, _ := h.generateAccessToken(user)
 	refreshToken, _ := h.createRefreshToken(user.ID)
@@ -402,7 +403,33 @@ func (h *AuthHandler) LogoutAll(c *gin.Context) {
 	database.DB.Where("user_id = ?", userID).Delete(&model.RefreshToken{})
 	database.DB.Model(&model.User{}).Where("id = ?", userID).
 		Update("token_version", gormlib.Expr("token_version + 1"))
+
+	// Отправляем push-уведомление на все устройства пользователя
+	if h.fcm != nil {
+		go h.fcm.SendToUser(userID, map[string]string{
+			"type": "logout_all",
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "logged out from all devices"})
+}
+
+// RegisterDevice — регистрирует FCM-токен для push-уведомлений
+func (h *AuthHandler) RegisterDevice(c *gin.Context) {
+	userID := c.GetString("userID")
+	var req struct {
+		Token string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+
+	if h.fcm != nil {
+		h.fcm.RegisterToken(userID, req.Token)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "device registered"})
 }
 
 // DeleteAccount — жёсткое удаление пользователя и всех его данных
