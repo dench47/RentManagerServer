@@ -6,7 +6,11 @@ server_linux
 uploads/
 
 # Environment (contains secrets)
+.env
 .env.git_disabled/
+
+# Old disabled files
+.git_disabled/
 
 # Firebase credentials (contains secrets)
 firebase-service-account.json

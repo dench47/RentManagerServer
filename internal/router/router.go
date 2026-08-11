@@ -13,6 +13,7 @@ import (
 
 func Setup(cfg *config.Config) *gin.Engine {
 	r := gin.Default()
+	_ = r.SetTrustedProxies([]string{"127.0.0.1"})
 
 	// CORS
 	r.Use(middleware.CORSMiddleware())

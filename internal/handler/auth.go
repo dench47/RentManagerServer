@@ -61,6 +61,19 @@ func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService
 	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, jwtCfg: jwtCfg}
 }
 
+// notifyNewLogin — отправляет FCM-уведомление на все устройства, кроме текущего
+func (h *AuthHandler) notifyNewLogin(userID string, excludeToken string) {
+	if h.fcm == nil {
+		return
+	}
+	now := time.Now().Format("15:04")
+	go h.fcm.SendToUser(userID, map[string]string{
+		"type":  "new_login",
+		"title": "Новый вход в аккаунт",
+		"body":  "Замечен вход в " + now,
+	}, excludeToken)
+}
+
 func (h *AuthHandler) SaveName(c *gin.Context) {
 	userID := c.GetString("userID")
 	var req SaveNameRequest
@@ -79,7 +92,10 @@ func (h *AuthHandler) SaveName(c *gin.Context) {
 
 // Login — проверяет телефон в БД, отдаёт JWT + refresh_token если существует
 func (h *AuthHandler) Login(c *gin.Context) {
-	var req SendCodeRequest
+	var req struct {
+		Phone    string `json:"phone" binding:"required"`
+		FcmToken string `json:"fcm_token"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
 		return
@@ -89,6 +105,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	if err == nil {
 		tokenStr, _ := h.generateAccessToken(user)
 		refreshToken, _ := h.createRefreshToken(user.ID)
+		h.notifyNewLogin(user.ID, req.FcmToken)
 		c.JSON(http.StatusOK, gin.H{
 			"access_token":  tokenStr,
 			"refresh_token": refreshToken,
@@ -123,7 +140,10 @@ func (h *AuthHandler) CallCheckAdd(c *gin.Context) {
 
 // CallCheckStatus — проверяет статус звонка, создаёт пользователя, выдаёт токены
 func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
-	var req SendCodeRequest
+	var req struct {
+		Phone    string `json:"phone" binding:"required"`
+		FcmToken string `json:"fcm_token"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
 		return
@@ -149,6 +169,7 @@ func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
 	}
 	tokenStr, _ := h.generateAccessToken(user)
 	refreshToken, _ := h.createRefreshToken(user.ID)
+	h.notifyNewLogin(user.ID, req.FcmToken)
 	c.JSON(http.StatusOK, gin.H{
 		"verified":      true,
 		"access_token":  tokenStr,
@@ -339,6 +360,7 @@ func (h *AuthHandler) VerifyPassword(c *gin.Context) {
 	var req struct {
 		Phone    string `json:"phone" binding:"required"`
 		Password string `json:"password" binding:"required"`
+		FcmToken string `json:"fcm_token"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone and password required"})
@@ -390,6 +412,7 @@ func (h *AuthHandler) VerifyPassword(c *gin.Context) {
 
 	tokenStr, _ := h.generateAccessToken(user)
 	refreshToken, _ := h.createRefreshToken(user.ID)
+	h.notifyNewLogin(user.ID, req.FcmToken)
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  tokenStr,
 		"refresh_token": refreshToken,
@@ -408,7 +431,7 @@ func (h *AuthHandler) LogoutAll(c *gin.Context) {
 	if h.fcm != nil {
 		go h.fcm.SendToUser(userID, map[string]string{
 			"type": "logout_all",
-		})
+		}, "")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "logged out from all devices"})

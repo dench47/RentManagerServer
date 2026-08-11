@@ -59,10 +59,21 @@ func (s *FCMService) RemoveToken(userID, token string) {
 	s.tokens[userID] = filtered
 }
 
-func (s *FCMService) SendToUser(userID string, data map[string]string) (int, error) {
+func (s *FCMService) SendToUser(userID string, data map[string]string, excludeToken string) (int, error) {
 	s.mu.RLock()
 	tokens := s.tokens[userID]
 	s.mu.RUnlock()
+
+	// Фильтруем — исключаем устройство, с которого был вход
+	if excludeToken != "" {
+		filtered := make([]string, 0, len(tokens))
+		for _, t := range tokens {
+			if t != excludeToken {
+				filtered = append(filtered, t)
+			}
+		}
+		tokens = filtered
+	}
 
 	if len(tokens) == 0 {
 		log.Printf("FCM: no tokens for user %s — push skipped", userID)
