@@ -1,0 +1,9 @@
+# Binaries
+server.exe
+server_linux
+
+# Uploads (runtime)
+uploads/
+
+# Environment (contains secrets)
+.env

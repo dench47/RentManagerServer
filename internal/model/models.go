@@ -1,0 +1,101 @@
+package model
+
+// Property — объект недвижимости
+type Property struct {
+	BaseModel
+	UserID         string   `gorm:"index;not null;size:36" json:"user_id"`
+	Name           string   `gorm:"not null;size:200" json:"name"`
+	Address        string   `gorm:"size:500" json:"address"`
+	Area           *float64 `json:"area"`
+	TenantInfo     *string  `gorm:"type:text" json:"tenant_info"`
+	ServiceInfo    *string  `gorm:"type:text" json:"service_info"`
+	Status         string   `gorm:"size:20;default:free" json:"status"` // free / occupied
+	RentAmount     *float64 `json:"rent_amount"`
+	RentEndDate    *string  `gorm:"size:30" json:"rent_end_date"`
+	ContractNumber *string  `gorm:"size:50" json:"contract_number"`
+	ContractDate   *string  `gorm:"size:30" json:"contract_date"`
+	TenantID       *string  `gorm:"size:36;index" json:"tenant_id"`
+	Photos         []Photo  `gorm:"foreignKey:PropertyID" json:"photos,omitempty"`
+}
+
+// Photo — фотография объекта
+type Photo struct {
+	ID         string `gorm:"primaryKey;size:36" json:"id"`
+	PropertyID string `gorm:"index;not null;size:36" json:"property_id"`
+	URL        string `gorm:"not null;size:500" json:"url"`
+}
+
+// Tenant — арендатор
+type Tenant struct {
+	BaseModel
+	OwnerID      string  `gorm:"index;not null;size:36" json:"owner_id"`
+	FullName     string  `gorm:"not null;size:200" json:"full_name"`
+	CompanyName  *string `gorm:"size:200" json:"company_name"`
+	PassportData *string `gorm:"type:text" json:"passport_data"`
+	Phone        string  `gorm:"not null;size:20" json:"phone"`
+	Email        *string `gorm:"size:100" json:"email"`
+	Active       bool    `gorm:"default:true" json:"active"`
+	ServiceInfo  *string `gorm:"type:text" json:"service_info"`
+}
+
+// Meter — прибор учёта
+type Meter struct {
+	BaseModel
+	PropertyID           string  `gorm:"index;not null;size:36" json:"property_id"`
+	UserID               string  `gorm:"index;not null;size:36" json:"user_id"`
+	Type                 string  `gorm:"not null;size:30" json:"type"` // hot_water, cold_water, electricity, heat
+	FactoryNumber        string  `gorm:"not null;size:100" json:"factory_number"`
+	NextVerificationDate string  `gorm:"size:30" json:"next_verification_date"`
+	CurrentValue         float64 `gorm:"not null" json:"current_value"`
+	Unit                 string  `gorm:"not null;size:20" json:"unit"` // м³, кВт·ч, Гкал
+	SubmitReadingsBy     string  `gorm:"size:30" json:"submit_readings_by"`
+	LastUpdated          *string `gorm:"size:30" json:"last_updated"`
+}
+
+// Payment — платёж
+type Payment struct {
+	BaseModel
+	PropertyID string  `gorm:"index;not null;size:36" json:"property_id"`
+	UserID     string  `gorm:"index;not null;size:36" json:"user_id"`
+	Amount     float64 `gorm:"not null" json:"amount"`
+	Date       string  `gorm:"not null;size:30" json:"date"`
+	Status     string  `gorm:"size:20;default:pending" json:"status"` // paid / pending / overdue
+	Type       string  `gorm:"size:20;not null" json:"type"`          // income / expense
+}
+
+// PaymentSchedule — график платежей
+type PaymentSchedule struct {
+	BaseModel
+	PropertyID  string   `gorm:"index;not null;size:36" json:"property_id"`
+	UserID      string   `gorm:"index;not null;size:36" json:"user_id"`
+	DayOfMonth  *int     `json:"day_of_month"` // для автоматических ежемесячных
+	Amount      *float64 `json:"amount"`
+	Type        string   `gorm:"size:20;default:auto" json:"type"` // auto / manual
+	CustomDates *string  `gorm:"type:jsonb" json:"custom_dates"`   // JSONB для ручного ввода
+}
+
+// Chat — чат
+type Chat struct {
+	BaseModel
+	PropertyID     string `gorm:"index;size:36" json:"property_id"`
+	ParticipantIDs string `gorm:"not null;type:jsonb" json:"participant_ids"`
+}
+
+// RefreshToken — токен для обновления access-токена
+type RefreshToken struct {
+	ID        string `gorm:"primaryKey;size:36" json:"id"`
+	UserID    string `gorm:"index;not null;size:36" json:"user_id"`
+	Token     string `gorm:"uniqueIndex;not null;size:255" json:"token"`
+	ExpiresAt int64  `gorm:"not null" json:"expires_at"`
+	CreatedAt int64  `gorm:"autoCreateTime:milli" json:"created_at"`
+}
+
+// Message — сообщение в чате
+type Message struct {
+	ID        string `gorm:"primaryKey;size:36" json:"id"`
+	ChatID    string `gorm:"index;not null;size:36" json:"chat_id"`
+	SenderID  string `gorm:"not null;size:36" json:"sender_id"`
+	Text      string `gorm:"type:text;not null" json:"text"`
+	Read      bool   `gorm:"default:false" json:"read"`
+	CreatedAt int64  `gorm:"not null" json:"timestamp"`
+}
