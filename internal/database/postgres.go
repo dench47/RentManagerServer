@@ -14,7 +14,7 @@ import (
 var DB *gorm.DB
 
 func InitPostgres(cfg config.DBConfig) {
-	var logLevel logger.LogLevel = logger.Silent
+	var logLevel = logger.Silent
 	if os.Getenv("DB_LOG_QUERIES") == "true" {
 		logLevel = logger.Info
 	}
