@@ -74,6 +74,26 @@ func (h *AuthHandler) notifyNewLogin(userID string, excludeToken string) {
 	}, excludeToken)
 }
 
+// PinAttempts — возвращает оставшееся количество попыток ввода PIN
+func (h *AuthHandler) PinAttempts(c *gin.Context) {
+	phone := c.Query("phone")
+	if phone == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
+		return
+	}
+	key := "pin_attempts:" + phone
+	val, err := database.RDB.Get(c, key).Int64()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"attempts_left": 5})
+		return
+	}
+	remaining := 5 - int(val)
+	if remaining < 0 {
+		remaining = 0
+	}
+	c.JSON(http.StatusOK, gin.H{"attempts_left": remaining})
+}
+
 func (h *AuthHandler) SaveName(c *gin.Context) {
 	userID := c.GetString("userID")
 	var req SaveNameRequest

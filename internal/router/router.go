@@ -64,6 +64,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		auth.POST("/callcheck/status", authHandler.CallCheckStatus)
 		auth.POST("/refresh", authHandler.RefreshToken)
 		auth.POST("/verify_password", authHandler.VerifyPassword)
+		auth.GET("/pin_attempts", authHandler.PinAttempts)
 	}
 
 	// Protected routes

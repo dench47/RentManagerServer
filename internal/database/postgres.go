@@ -2,6 +2,7 @@ package database
 
 import (
 	"log"
+	"os"
 	"rentmanager-server/internal/config"
 	"rentmanager-server/internal/model"
 
@@ -13,9 +14,14 @@ import (
 var DB *gorm.DB
 
 func InitPostgres(cfg config.DBConfig) {
+	var logLevel logger.LogLevel = logger.Silent
+	if os.Getenv("DB_LOG_QUERIES") == "true" {
+		logLevel = logger.Info
+	}
+
 	var err error
 	DB, err = gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.Default.LogMode(logLevel),
 	})
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
