@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 SSH_KEY="$HOME/.ssh/id_ed25519_rentmanager"
 SERVER="root@45.11.92.171"
