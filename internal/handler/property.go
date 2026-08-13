@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 
 	"rentmanager-server/internal/database"
@@ -47,10 +48,21 @@ func (h *PropertyHandler) Create(c *gin.Context) {
 	property.UserID = userID
 	property.Status = "free"
 
+	// Detach photos, create property, then create photos explicitly with generated IDs
+	photos := property.Photos
+	property.Photos = nil
 	if err := database.DB.Create(&property).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	for i := range photos {
+		photos[i].ID = uuid.New().String()
+		photos[i].PropertyID = property.ID
+		if err := database.DB.Create(&photos[i]).Error; err != nil {
+			log.Printf("WARNING: failed to create photo: %v", err)
+		}
+	}
+	property.Photos = photos
 
 	// Auto-set is_landlord when first property created
 	database.DB.Model(&model.User{}).Where("id = ?", userID).Update("is_landlord", true)

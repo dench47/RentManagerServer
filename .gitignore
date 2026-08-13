@@ -14,3 +14,6 @@ uploads/
 
 # Firebase credentials (contains secrets)
 firebase-service-account.json
+
+# Deploy script (contains secrets)
+deploy.sh
