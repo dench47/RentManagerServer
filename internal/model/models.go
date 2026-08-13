@@ -9,6 +9,9 @@ type Property struct {
 	Area           *float64 `json:"area"`
 	TenantInfo     *string  `gorm:"type:text" json:"tenant_info"`
 	ServiceInfo    *string  `gorm:"type:text" json:"service_info"`
+	Phone          *string  `gorm:"size:30" json:"phone"`
+	WifiPassword   *string  `gorm:"size:100" json:"wifi_password"`
+	HouseRules     *string  `gorm:"type:text" json:"house_rules"`
 	Status         string   `gorm:"size:20;default:free" json:"status"` // free / occupied
 	RentAmount     *float64 `json:"rent_amount"`
 	RentEndDate    *string  `gorm:"size:30" json:"rent_end_date"`
