@@ -54,23 +54,158 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
-// AttachTenant — прикрепить арендатора к объекту
+// AttachTenant — прикрепить арендатора к объекту.
+// Принимает tenant_id (ручная запись) либо user_id (пользователь приложения).
 func (h *TenantHandler) AttachToProperty(c *gin.Context) {
 	propertyID := c.Param("id")
 	var req struct {
-		TenantID string `json:"tenant_id" binding:"required"`
+		TenantID string `json:"tenant_id"`
+		UserID   string `json:"user_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	tenantID := req.TenantID
+
+	// Если передан user_id — находим/создаём запись арендатора по пользователю
+	if req.UserID != "" {
+		var user model.User
+		if err := database.DB.First(&user, "id = ?", req.UserID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		var tenant model.Tenant
+		if err := database.DB.Where("user_id = ?", req.UserID).First(&tenant).Error; err == nil {
+			tenantID = tenant.ID
+		} else {
+			newTenant := model.Tenant{
+				BaseModel: model.BaseModel{ID: uuid.New().String()},
+				OwnerID:   c.GetString("userID"),
+				UserID:    &req.UserID,
+				FullName:  user.Name,
+				Phone:     user.Phone,
+				Active:    true,
+			}
+			if err := database.DB.Create(&newTenant).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			tenantID = newTenant.ID
+		}
+
+		// Помечаем пользователя как арендатора
+		database.DB.Model(&model.User{}).Where("id = ?", req.UserID).Update("is_tenant", true)
+	}
+
+	if tenantID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id or user_id required"})
+		return
+	}
+
 	database.DB.Model(&model.Property{}).Where("id = ?", propertyID).
-		Updates(map[string]interface{}{"tenant_id": req.TenantID, "status": "occupied"})
+		Updates(map[string]interface{}{"tenant_id": tenantID, "status": "occupied"})
 
-	// Auto-set is_tenant when tenant is attached to a property
-	database.DB.Model(&model.User{}).Where("id = ?", req.TenantID).Update("is_tenant", true)
+	c.JSON(http.StatusOK, gin.H{"message": "tenant attached", "tenant_id": tenantID})
+}
 
-	c.JSON(http.StatusOK, gin.H{"message": "tenant attached"})
+// ---------------- User search ----------------
+
+type UserHandler struct{}
+
+func NewUserHandler() *UserHandler { return &UserHandler{} }
+
+// Search — поиск пользователей по номеру телефона
+func (h *UserHandler) Search(c *gin.Context) {
+	phone := c.Query("phone")
+	var users []model.User
+	query := database.DB.Model(&model.User{})
+	if phone != "" {
+		query = query.Where("phone LIKE ?", "%"+phone+"%")
+	}
+	query.Limit(50).Find(&users)
+
+	type userResult struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		Phone      string `json:"phone"`
+		AvatarURL  string `json:"avatar_url"`
+		IsLandlord bool   `json:"is_landlord"`
+	}
+	result := make([]userResult, 0, len(users))
+	for _, u := range users {
+		result = append(result, userResult{
+			ID:         u.ID,
+			Name:       u.Name,
+			Phone:      u.Phone,
+			AvatarURL:  u.AvatarURL,
+			IsLandlord: u.IsLandlord,
+		})
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// ---------------- Booking ----------------
+
+type BookingHandler struct{}
+
+func NewBookingHandler() *BookingHandler { return &BookingHandler{} }
+
+func (h *BookingHandler) List(c *gin.Context) {
+	propertyID := c.Param("id")
+	var bookings []model.Booking
+	database.DB.Where("property_id = ?", propertyID).Order("start_date asc").Find(&bookings)
+	c.JSON(http.StatusOK, bookings)
+}
+
+func (h *BookingHandler) Create(c *gin.Context) {
+	propertyID := c.Param("id")
+	userID := c.GetString("userID")
+	var booking model.Booking
+	if err := c.ShouldBindJSON(&booking); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	booking.ID = uuid.New().String()
+	booking.PropertyID = propertyID
+	booking.CreatedBy = userID
+	if booking.Source == "" {
+		booking.Source = "manual"
+	}
+	if err := database.DB.Create(&booking).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, booking)
+}
+
+func (h *BookingHandler) Update(c *gin.Context) {
+	id := c.Param("bookingId")
+	var existing model.Booking
+	if err := database.DB.First(&existing, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "booking not found"})
+		return
+	}
+	var input model.Booking
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	database.DB.Model(&existing).Updates(map[string]interface{}{
+		"start_date": input.StartDate,
+		"end_date":   input.EndDate,
+		"source":     input.Source,
+		"tenant_id":  input.TenantID,
+	})
+	c.JSON(http.StatusOK, existing)
+}
+
+func (h *BookingHandler) Delete(c *gin.Context) {
+	id := c.Param("bookingId")
+	database.DB.Delete(&model.Booking{}, "id = ?", id)
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
 // ---------------- Payment ----------------

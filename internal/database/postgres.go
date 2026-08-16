@@ -36,6 +36,7 @@ func InitPostgres(cfg config.DBConfig) {
 		&model.Meter{},
 		&model.Payment{},
 		&model.PaymentSchedule{},
+		&model.Booking{},
 		&model.Chat{},
 		&model.Message{},
 		&model.RefreshToken{},

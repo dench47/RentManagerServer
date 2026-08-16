@@ -43,6 +43,8 @@ func Setup(cfg *config.Config) *gin.Engine {
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler()
 	paymentHandler := handler.NewPaymentHandler()
+	userHandler := handler.NewUserHandler()
+	bookingHandler := handler.NewBookingHandler()
 	financeHandler := handler.NewFinanceHandler()
 	chatHandler := handler.NewChatHandler()
 	uploadHandler := handler.NewUploadHandler(cfg.UploadDir, s3Svc)
@@ -82,6 +84,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 
 		// Users
 		protected.GET("/users/me", authHandler.GetMe)
+		protected.GET("/users/search", userHandler.Search)
 
 		// Properties
 		protected.GET("/properties", propertyHandler.List)
@@ -92,6 +95,12 @@ func Setup(cfg *config.Config) *gin.Engine {
 
 		// Attach tenant
 		protected.POST("/properties/:id/attach_tenant", tenantHandler.AttachToProperty)
+
+		// Bookings (занятость объекта — заливка шахматки)
+		protected.GET("/properties/:id/bookings", bookingHandler.List)
+		protected.POST("/properties/:id/bookings", bookingHandler.Create)
+		protected.PUT("/properties/:id/bookings/:bookingId", bookingHandler.Update)
+		protected.DELETE("/properties/:id/bookings/:bookingId", bookingHandler.Delete)
 
 		// Meters
 		protected.GET("/properties/:id/meters", meterHandler.ListByProperty)
