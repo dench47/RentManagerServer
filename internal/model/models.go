@@ -7,6 +7,7 @@ type Property struct {
 	Name           string   `gorm:"not null;size:200" json:"name"`
 	Address        string   `gorm:"size:500" json:"address"`
 	Area           *float64 `json:"area"`
+	Description    *string  `gorm:"type:text" json:"description"`
 	TenantInfo     *string  `gorm:"type:text" json:"tenant_info"`
 	ServiceInfo    *string  `gorm:"type:text" json:"service_info"`
 	Phone          *string  `gorm:"size:30" json:"phone"`
