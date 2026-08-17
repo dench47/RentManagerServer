@@ -276,6 +276,23 @@ func (h *PaymentHandler) ListSchedules(c *gin.Context) {
 	c.JSON(http.StatusOK, schedules)
 }
 
+// ListSchedulesForTenant — графики платежей объектов, которые арендует текущий пользователь
+func (h *PaymentHandler) ListSchedulesForTenant(c *gin.Context) {
+	userID := c.GetString("userID")
+	var tenantIDs []string
+	database.DB.Model(&model.Tenant{}).Where("user_id = ?", userID).Pluck("id", &tenantIDs)
+
+	schedules := make([]model.PaymentSchedule, 0)
+	if len(tenantIDs) > 0 {
+		var propertyIDs []string
+		database.DB.Model(&model.Property{}).Where("tenant_id IN ?", tenantIDs).Pluck("id", &propertyIDs)
+		if len(propertyIDs) > 0 {
+			database.DB.Where("property_id IN ?", propertyIDs).Find(&schedules)
+		}
+	}
+	c.JSON(http.StatusOK, schedules)
+}
+
 func (h *PaymentHandler) CreateSchedule(c *gin.Context) {
 	userID := c.GetString("userID")
 	var schedule model.PaymentSchedule

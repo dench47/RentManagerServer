@@ -121,6 +121,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		// Payment schedules
 		protected.GET("/payments/schedule", paymentHandler.ListSchedules)
 		protected.POST("/payments/schedule", paymentHandler.CreateSchedule)
+		protected.GET("/tenant/schedules", paymentHandler.ListSchedulesForTenant)
 
 		// Payments (имитация оплаты)
 		protected.GET("/properties/:id/payments", paymentHandler.ListPayments)
