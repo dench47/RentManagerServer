@@ -102,6 +102,10 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.PUT("/properties/:id/bookings/:bookingId", bookingHandler.Update)
 		protected.DELETE("/properties/:id/bookings/:bookingId", bookingHandler.Delete)
 
+		// Tenant view: арендованные объекты и арендодатели
+		protected.GET("/tenant/properties", propertyHandler.ListForTenant)
+		protected.GET("/tenant/landlords", userHandler.ListLandlordsForTenant)
+
 		// Meters
 		protected.GET("/properties/:id/meters", meterHandler.ListByProperty)
 		protected.POST("/properties/:id/meters", meterHandler.Create)
@@ -117,6 +121,10 @@ func Setup(cfg *config.Config) *gin.Engine {
 		// Payment schedules
 		protected.GET("/payments/schedule", paymentHandler.ListSchedules)
 		protected.POST("/payments/schedule", paymentHandler.CreateSchedule)
+
+		// Payments (имитация оплаты)
+		protected.GET("/properties/:id/payments", paymentHandler.ListPayments)
+		protected.POST("/properties/:id/payments", paymentHandler.CreatePayment)
 
 		// Finance
 		protected.GET("/finance/report", financeHandler.Report)

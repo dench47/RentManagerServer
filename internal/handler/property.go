@@ -27,6 +27,19 @@ func (h *PropertyHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, properties)
 }
 
+// ListForTenant — объекты, где текущий пользователь является арендатором
+func (h *PropertyHandler) ListForTenant(c *gin.Context) {
+	userID := c.GetString("userID")
+	var tenantIDs []string
+	database.DB.Model(&model.Tenant{}).Where("user_id = ?", userID).Pluck("id", &tenantIDs)
+
+	properties := make([]model.Property, 0)
+	if len(tenantIDs) > 0 {
+		database.DB.Where("tenant_id IN ?", tenantIDs).Preload("Photos").Find(&properties)
+	}
+	c.JSON(http.StatusOK, properties)
+}
+
 func (h *PropertyHandler) Get(c *gin.Context) {
 	id := c.Param("id")
 	var property model.Property

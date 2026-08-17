@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"rentmanager-server/internal/database"
 	"rentmanager-server/internal/model"
@@ -117,26 +118,28 @@ type UserHandler struct{}
 
 func NewUserHandler() *UserHandler { return &UserHandler{} }
 
+// UserPublic — публичное представление пользователя (поиск, список арендодателей)
+type UserPublic struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Phone      string `json:"phone"`
+	AvatarURL  string `json:"avatar_url"`
+	IsLandlord bool   `json:"is_landlord"`
+}
+
 // Search — поиск пользователей по номеру телефона
 func (h *UserHandler) Search(c *gin.Context) {
 	phone := c.Query("phone")
 	var users []model.User
 	query := database.DB.Model(&model.User{})
 	if phone != "" {
-		query = query.Where("phone LIKE ?", "%"+phone+"%")
+		query = query.Where("phone LIKE ?", "%"+normalizePhoneForSearch(phone)+"%")
 	}
 	query.Limit(50).Find(&users)
 
-	type userResult struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		Phone      string `json:"phone"`
-		AvatarURL  string `json:"avatar_url"`
-		IsLandlord bool   `json:"is_landlord"`
-	}
-	result := make([]userResult, 0, len(users))
+	result := make([]UserPublic, 0, len(users))
 	for _, u := range users {
-		result = append(result, userResult{
+		result = append(result, UserPublic{
 			ID:         u.ID,
 			Name:       u.Name,
 			Phone:      u.Phone,
@@ -145,6 +148,58 @@ func (h *UserHandler) Search(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ListLandlordsForTenant — арендодатели (владельцы объектов), у которых арендует текущий пользователь
+func (h *UserHandler) ListLandlordsForTenant(c *gin.Context) {
+	userID := c.GetString("userID")
+	var landlordIDs []string
+	database.DB.Model(&model.Property{}).
+		Joins("JOIN tenants ON tenants.id = properties.tenant_id").
+		Where("tenants.user_id = ?", userID).
+		Distinct().
+		Pluck("properties.user_id", &landlordIDs)
+
+	landlords := make([]UserPublic, 0)
+	if len(landlordIDs) > 0 {
+		var users []model.User
+		database.DB.Where("id IN ?", landlordIDs).Find(&users)
+		for _, u := range users {
+			landlords = append(landlords, UserPublic{
+				ID:         u.ID,
+				Name:       u.Name,
+				Phone:      u.Phone,
+				AvatarURL:  u.AvatarURL,
+				IsLandlord: true,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, landlords)
+}
+
+// normalizePhoneForSearch — приводит номер к национальным цифрам, чтобы поиск
+// находил пользователя в любом формате написания:
+// 89009999999 / +79009999999 / 9009999999 → 9009999999; +8613800138000 → 13800138000.
+func normalizePhoneForSearch(raw string) string {
+	digits := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] >= '0' && raw[i] <= '9' {
+			digits = append(digits, raw[i])
+		}
+	}
+	d := string(digits)
+	switch {
+	case len(d) == 11 && (d[0] == '7' || d[0] == '8'):
+		return d[1:]
+	case len(d) == 10 && d[0] == '9':
+		return d
+	case len(d) == 13 && d[:2] == "86":
+		return d[2:]
+	case len(d) == 11 && d[0] == '1':
+		return d
+	default:
+		return d
+	}
 }
 
 // ---------------- Booking ----------------
@@ -232,6 +287,41 @@ func (h *PaymentHandler) CreateSchedule(c *gin.Context) {
 	schedule.UserID = userID
 	database.DB.Create(&schedule)
 	c.JSON(http.StatusCreated, schedule)
+}
+
+// CreatePayment — записывает платёж (имитация оплаты арендатором)
+func (h *PaymentHandler) CreatePayment(c *gin.Context) {
+	propertyID := c.Param("id")
+	userID := c.GetString("userID")
+	var req struct {
+		Amount float64 `json:"amount"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	payment := model.Payment{
+		BaseModel:  model.BaseModel{ID: uuid.New().String()},
+		PropertyID: propertyID,
+		UserID:     userID,
+		Amount:     req.Amount,
+		Date:       time.Now().Format("2006-01-02"),
+		Status:     "paid",
+		Type:       "income",
+	}
+	if err := database.DB.Create(&payment).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, payment)
+}
+
+// ListPayments — платежи по объекту
+func (h *PaymentHandler) ListPayments(c *gin.Context) {
+	propertyID := c.Param("id")
+	var payments []model.Payment
+	database.DB.Where("property_id = ?", propertyID).Order("date desc").Find(&payments)
+	c.JSON(http.StatusOK, payments)
 }
 
 // ---------------- Finance ----------------
