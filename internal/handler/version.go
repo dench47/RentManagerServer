@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"sync"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,8 +20,6 @@ type VersionResponse struct {
 type VersionHandler struct {
 	jsonPath   string
 	apkBaseURL string
-	mu         sync.RWMutex
-	cached     *VersionResponse
 }
 
 func NewVersionHandler(jsonPath, apkBaseURL string) *VersionHandler {
@@ -34,17 +31,10 @@ func (h *VersionHandler) GetVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// load reads version.json on every request. The file is tiny and the endpoint
+// is called rarely (once per app launch), so caching it forever caused stale
+// versions to be served after version.json was updated without a server restart.
 func (h *VersionHandler) load() *VersionResponse {
-	h.mu.RLock()
-	if h.cached != nil {
-		defer h.mu.RUnlock()
-		return h.cached
-	}
-	h.mu.RUnlock()
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	data, err := os.ReadFile(h.jsonPath)
 	if err != nil {
 		// Fallback defaults
@@ -82,6 +72,5 @@ func (h *VersionHandler) load() *VersionResponse {
 		v.MinClientVersion = 1
 	}
 
-	h.cached = &v
-	return h.cached
+	return &v
 }

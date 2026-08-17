@@ -15,6 +15,7 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/server .
 COPY --from=builder /app/.env .
+COPY --from=builder /app/firebase-service-account.json .
 COPY --from=builder /app/uploads ./uploads
 
 EXPOSE 8080

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"log"
 	"os"
 
 	"rentmanager-server/internal/config"
@@ -30,7 +31,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 	fcmCredsPath := os.Getenv("FCM_CREDENTIALS_PATH")
 	if fcmCredsPath != "" {
 		data, err := os.ReadFile(fcmCredsPath)
-		if err == nil {
+		if err != nil {
+			log.Printf("WARNING: FCM disabled — cannot read credentials %s: %v", fcmCredsPath, err)
+		} else {
 			fcmSvc, err = service.NewFCMService(data)
 			if err != nil {
 				panic("FCM init failed: " + err.Error())
@@ -41,7 +44,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, cfg.JWT)
 	propertyHandler := handler.NewPropertyHandler()
 	meterHandler := handler.NewMeterHandler()
-	tenantHandler := handler.NewTenantHandler()
+	tenantHandler := handler.NewTenantHandler(fcmSvc)
 	paymentHandler := handler.NewPaymentHandler()
 	userHandler := handler.NewUserHandler()
 	bookingHandler := handler.NewBookingHandler()

@@ -15,9 +15,11 @@ import (
 
 // ---------------- Tenant ----------------
 
-type TenantHandler struct{}
+type TenantHandler struct {
+	fcm *service.FCMService
+}
 
-func NewTenantHandler() *TenantHandler { return &TenantHandler{} }
+func NewTenantHandler(fcm *service.FCMService) *TenantHandler { return &TenantHandler{fcm: fcm} }
 
 func (h *TenantHandler) List(c *gin.Context) {
 	userID := c.GetString("userID")
@@ -51,6 +53,46 @@ func (h *TenantHandler) Create(c *gin.Context) {
 
 func (h *TenantHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
+
+	// Загружаем арендатора — нужен user_id для уведомления и сброса флага
+	var tenant model.Tenant
+	if err := database.DB.First(&tenant, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+
+	// Снимаем арендатора со всех объектов, к которым он был привязан
+	var properties []model.Property
+	database.DB.Where("tenant_id = ?", id).Find(&properties)
+	for _, p := range properties {
+		database.DB.Model(&model.Property{}).Where("id = ?", p.ID).
+			Updates(map[string]interface{}{"tenant_id": nil, "status": "free"})
+	}
+
+	// Уведомляем пользователя, если арендатор привязан к аккаунту приложения
+	if tenant.UserID != nil && h.fcm != nil {
+		body := "Арендодатель удалил вас из объекта"
+		if len(properties) == 1 {
+			body = "Арендодатель удалил вас из объекта «" + properties[0].Name + "»"
+		}
+		go h.fcm.SendToUser(*tenant.UserID, map[string]string{
+			"type":  "tenant_detached",
+			"title": "Доступ к объекту отозван",
+			"body":  body,
+		}, "")
+	}
+
+	// Сбрасываем is_tenant, если у пользователя не осталось активных записей арендатора
+	if tenant.UserID != nil {
+		var count int64
+		database.DB.Model(&model.Tenant{}).
+			Where("user_id = ? AND id <> ?", *tenant.UserID, id).
+			Count(&count)
+		if count == 0 {
+			database.DB.Model(&model.User{}).Where("id = ?", *tenant.UserID).Update("is_tenant", false)
+		}
+	}
+
 	database.DB.Delete(&model.Tenant{}, "id = ?", id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
@@ -78,8 +120,14 @@ func (h *TenantHandler) AttachToProperty(c *gin.Context) {
 			return
 		}
 
+		// Ищем запись арендатора, включая ранее удалённую (soft delete), чтобы не плодить дубли
 		var tenant model.Tenant
-		if err := database.DB.Where("user_id = ?", req.UserID).First(&tenant).Error; err == nil {
+		if err := database.DB.Unscoped().Where("user_id = ?", req.UserID).First(&tenant).Error; err == nil {
+			// Восстанавливаем запись, если она была удалена ранее
+			if tenant.DeletedAt.Valid {
+				database.DB.Unscoped().Model(&model.Tenant{}).Where("id = ?", tenant.ID).
+					Update("deleted_at", nil)
+			}
 			tenantID = tenant.ID
 		} else {
 			newTenant := model.Tenant{
@@ -108,6 +156,21 @@ func (h *TenantHandler) AttachToProperty(c *gin.Context) {
 
 	database.DB.Model(&model.Property{}).Where("id = ?", propertyID).
 		Updates(map[string]interface{}{"tenant_id": tenantID, "status": "occupied"})
+
+	// Push-уведомление арендатору о предоставлении доступа
+	var tenant model.Tenant
+	if err := database.DB.First(&tenant, "id = ?", tenantID).Error; err == nil && tenant.UserID != nil && h.fcm != nil {
+		var property model.Property
+		name := "объект"
+		if err := database.DB.First(&property, "id = ?", propertyID).Error; err == nil && property.Name != "" {
+			name = property.Name
+		}
+		go h.fcm.SendToUser(*tenant.UserID, map[string]string{
+			"type":  "tenant_attached",
+			"title": "Вам предоставлен доступ к объекту",
+			"body":  "Арендодатель добавил вас в объект «" + name + "»",
+		}, "")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "tenant attached", "tenant_id": tenantID})
 }
