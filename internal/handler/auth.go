@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"rentmanager-server/internal/config"
@@ -66,11 +67,12 @@ func (h *AuthHandler) notifyNewLogin(userID string, excludeToken string) {
 	if h.fcm == nil {
 		return
 	}
-	now := time.Now().Format("15:04")
+	now := time.Now()
 	go h.fcm.SendToUser(userID, map[string]string{
-		"type":  "new_login",
-		"title": "Новый вход в аккаунт",
-		"body":  "Замечен вход в " + now,
+		"type":      "new_login",
+		"title":     "Новый вход в аккаунт",
+		"body":      "Замечен вход в " + now.Format("15:04"),
+		"timestamp": strconv.FormatInt(now.Unix(), 10),
 	}, excludeToken)
 }
 
