@@ -83,6 +83,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/auth/set_password", authHandler.SetPassword)
 		protected.POST("/auth/logout_all", authHandler.LogoutAll)
 		protected.POST("/auth/register_device", authHandler.RegisterDevice)
+		protected.POST("/auth/unregister_device", authHandler.UnregisterDevice)
 		protected.DELETE("/auth/account", authHandler.DeleteAccount)
 
 		// Users

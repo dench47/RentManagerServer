@@ -4,17 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
+
+	"rentmanager-server/internal/database"
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
 	"google.golang.org/api/option"
 )
 
+const fcmTokenKeyPrefix = "fcm_tokens:"
+
 type FCMService struct {
-	app    *firebase.App
-	mu     sync.RWMutex
-	tokens map[string][]string // userID -> []fcmToken
+	app *firebase.App
 }
 
 func NewFCMService(credentialsJSON []byte) (*FCMService, error) {
@@ -24,45 +25,38 @@ func NewFCMService(credentialsJSON []byte) (*FCMService, error) {
 		return nil, fmt.Errorf("firebase.NewApp: %w", err)
 	}
 
-	return &FCMService{
-		app:    app,
-		tokens: make(map[string][]string),
-	}, nil
+	return &FCMService{app: app}, nil
 }
 
-func (s *FCMService) RegisterToken(userID, token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *FCMService) tokenKey(userID string) string {
+	return fcmTokenKeyPrefix + userID
+}
 
-	// Удаляем дубликаты и добавляем
-	existing := s.tokens[userID]
-	for _, t := range existing {
-		if t == token {
-			return // уже зарегистрирован
-		}
+// RegisterToken — привязывает FCM-токен к пользователю (хранится в Redis, переживает рестарты)
+func (s *FCMService) RegisterToken(userID, token string) {
+	if err := database.RDB.SAdd(context.Background(), s.tokenKey(userID), token).Err(); err != nil {
+		log.Printf("FCM: failed to persist token for user %s: %v", userID, err)
+		return
 	}
-	s.tokens[userID] = append(existing, token)
 	log.Printf("FCM: registered token for user %s", userID)
 }
 
+// RemoveToken — отвязывает FCM-токен от пользователя
 func (s *FCMService) RemoveToken(userID, token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tokens := s.tokens[userID]
-	filtered := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		if t != token {
-			filtered = append(filtered, t)
-		}
+	if err := database.RDB.SRem(context.Background(), s.tokenKey(userID), token).Err(); err != nil {
+		log.Printf("FCM: failed to remove token for user %s: %v", userID, err)
 	}
-	s.tokens[userID] = filtered
+}
+
+// ClearUserTokens — удаляет все FCM-токены пользователя
+func (s *FCMService) ClearUserTokens(userID string) {
+	if err := database.RDB.Del(context.Background(), s.tokenKey(userID)).Err(); err != nil {
+		log.Printf("FCM: failed to clear tokens for user %s: %v", userID, err)
+	}
 }
 
 func (s *FCMService) SendToUser(userID string, data map[string]string, excludeToken string) (int, error) {
-	s.mu.RLock()
-	tokens := s.tokens[userID]
-	s.mu.RUnlock()
+	tokens := database.RDB.SMembers(context.Background(), s.tokenKey(userID)).Val()
 
 	// Фильтруем — исключаем устройство, с которого был вход
 	if excludeToken != "" {
@@ -104,18 +98,10 @@ func (s *FCMService) SendToUser(userID string, data map[string]string, excludeTo
 	log.Printf("FCM: sent %d/%d successfully for user %s", resp.SuccessCount, len(tokens), userID)
 
 	// Удаляем невалидные токены
-	invalidTokens := make([]string, 0)
 	for i, r := range resp.Responses {
 		if !r.Success && (messaging.IsUnregistered(r.Error) || messaging.IsInvalidArgument(r.Error)) {
-			invalidTokens = append(invalidTokens, tokens[i])
+			s.RemoveToken(userID, tokens[i])
 		}
-	}
-	if len(invalidTokens) > 0 {
-		s.mu.Lock()
-		for _, t := range invalidTokens {
-			s.RemoveToken(userID, t)
-		}
-		s.mu.Unlock()
 	}
 
 	return resp.SuccessCount, nil

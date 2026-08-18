@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -112,7 +113,9 @@ func (h *AuthHandler) SaveName(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// Login — проверяет телефон в БД, отдаёт JWT + refresh_token если существует
+// Login — проверяет телефон в БД.
+// Токены здесь НЕ выдаются: вход по PIN происходит через verify_password.
+// В тестовом режиме (AUTH_BYPASS_PIN=true) токены выдаются сразу — только для локальной разработки.
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req struct {
 		Phone    string `json:"phone" binding:"required"`
@@ -124,19 +127,32 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 	var user model.User
 	err := database.DB.Where("phone = ?", req.Phone).First(&user).Error
-	if err == nil {
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"exists": false, "need_verify": true})
+		return
+	}
+
+	if os.Getenv("AUTH_BYPASS_PIN") == "true" {
+		log.Printf("WARNING: AUTH_BYPASS_PIN is enabled — login issues tokens WITHOUT PIN verification")
 		tokenStr, _ := h.generateAccessToken(user)
 		refreshToken, _ := h.createRefreshToken(user.ID)
 		h.notifyNewLogin(user.ID, req.FcmToken)
 		c.JSON(http.StatusOK, gin.H{
+			"exists":        true,
 			"access_token":  tokenStr,
 			"refresh_token": refreshToken,
 			"user":          user,
-			"exists":        true,
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"exists": false, "need_verify": true})
+
+	c.JSON(http.StatusOK, gin.H{
+		"exists":               true,
+		"has_password":         user.PasswordHash != "",
+		"name":                 user.Name,
+		"phone":                user.Phone,
+		"default_start_screen": user.DefaultStartScreen,
+	})
 }
 
 // CallCheckAdd — инициирует звонок через sms.ru
@@ -449,11 +465,12 @@ func (h *AuthHandler) LogoutAll(c *gin.Context) {
 	database.DB.Model(&model.User{}).Where("id = ?", userID).
 		Update("token_version", gormlib.Expr("token_version + 1"))
 
-	// Отправляем push-уведомление на все устройства пользователя
+	// Отправляем push-уведомление на все устройства пользователя и очищаем токены
 	if h.fcm != nil {
-		go h.fcm.SendToUser(userID, map[string]string{
+		h.fcm.SendToUser(userID, map[string]string{
 			"type": "logout_all",
 		}, "")
+		h.fcm.ClearUserTokens(userID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "logged out from all devices"})
@@ -475,6 +492,24 @@ func (h *AuthHandler) RegisterDevice(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "device registered"})
+}
+
+// UnregisterDevice — удаляет FCM-токен устройства (вызывается при логауте)
+func (h *AuthHandler) UnregisterDevice(c *gin.Context) {
+	userID := c.GetString("userID")
+	var req struct {
+		Token string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+
+	if h.fcm != nil {
+		h.fcm.RemoveToken(userID, req.Token)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "device unregistered"})
 }
 
 // DeleteAccount — жёсткое удаление пользователя и всех его данных
@@ -504,6 +539,9 @@ func (h *AuthHandler) DeleteAccount(c *gin.Context) {
 	}
 
 	database.DB.Unscoped().Where("id = ?", userID).Delete(&model.User{})
+	if h.fcm != nil {
+		h.fcm.ClearUserTokens(userID)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "account deleted"})
 }
 

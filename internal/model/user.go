@@ -1,5 +1,7 @@
 package model
 
+import "gorm.io/gorm"
+
 type User struct {
 	BaseModel
 	Phone              string `gorm:"uniqueIndex;not null;size:20" json:"phone"`
@@ -10,7 +12,14 @@ type User struct {
 	AvatarURL          string `gorm:"size:500" json:"avatar_url"`
 	Email              string `gorm:"size:200" json:"email"`
 	TokenVersion       int    `gorm:"default:0" json:"token_version"`
-	PasswordHash       string `gorm:"size:255" json:"password_hash"`
+	PasswordHash       string `gorm:"size:255" json:"-"`
+	HasPassword        bool   `gorm:"-" json:"has_password"`
 	FullName           string `gorm:"default:'';size:300" json:"full_name"`
 	DefaultStartScreen string `gorm:"default:'';size:20" json:"default_start_screen"`
+}
+
+// AfterFind заполняет HasPassword после чтения из БД, не отдавая сам хэш клиенту.
+func (u *User) AfterFind(tx *gorm.DB) error {
+	u.HasPassword = u.PasswordHash != ""
+	return nil
 }
