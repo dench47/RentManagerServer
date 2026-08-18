@@ -42,7 +42,7 @@ type RefreshRequest struct {
 }
 
 type SetPasswordRequest struct {
-	Password string `json:"password" binding:"required"`
+	Password string `json:"password"`
 }
 
 type AuthResponse struct {
@@ -397,7 +397,7 @@ func (h *AuthHandler) SetPassword(c *gin.Context) {
 func (h *AuthHandler) VerifyPassword(c *gin.Context) {
 	var req struct {
 		Phone    string `json:"phone" binding:"required"`
-		Password string `json:"password" binding:"required"`
+		Password string `json:"password"`
 		FcmToken string `json:"fcm_token"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
