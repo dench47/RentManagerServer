@@ -122,7 +122,7 @@ func (h *TenantHandler) AttachToProperty(c *gin.Context) {
 
 		// Ищем запись арендатора, включая ранее удалённую (soft delete), чтобы не плодить дубли
 		var tenant model.Tenant
-		if err := database.DB.Unscoped().Where("user_id = ?", req.UserID).First(&tenant).Error; err == nil {
+		if err := database.DB.Unscoped().Where("owner_id = ? AND user_id = ?", c.GetString("userID"), req.UserID).First(&tenant).Error; err == nil {
 			// Восстанавливаем запись, если она была удалена ранее
 			if tenant.DeletedAt.Valid {
 				database.DB.Unscoped().Model(&model.Tenant{}).Where("id = ?", tenant.ID).
