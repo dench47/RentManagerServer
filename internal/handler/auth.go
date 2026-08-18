@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -114,8 +113,8 @@ func (h *AuthHandler) SaveName(c *gin.Context) {
 }
 
 // Login — проверяет телефон в БД.
-// Токены здесь НЕ выдаются: вход по PIN происходит через verify_password.
-// В тестовом режиме (AUTH_BYPASS_PIN=true) токены выдаются сразу — только для локальной разработки.
+// Если PIN отключён (password_hash пустой) — выдаём токены сразу (вход без PIN).
+// Если PIN есть — токены не выдаются: вход по PIN через verify_password.
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req struct {
 		Phone    string `json:"phone" binding:"required"`
@@ -132,13 +131,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	if os.Getenv("AUTH_BYPASS_PIN") == "true" {
-		log.Printf("WARNING: AUTH_BYPASS_PIN is enabled — login issues tokens WITHOUT PIN verification")
+	// PIN отключён — вход без PIN
+	if user.PasswordHash == "" {
 		tokenStr, _ := h.generateAccessToken(user)
 		refreshToken, _ := h.createRefreshToken(user.ID)
 		h.notifyNewLogin(user.ID, req.FcmToken)
 		c.JSON(http.StatusOK, gin.H{
 			"exists":        true,
+			"has_password":  false,
 			"access_token":  tokenStr,
 			"refresh_token": refreshToken,
 			"user":          user,
@@ -148,7 +148,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"exists":               true,
-		"has_password":         user.PasswordHash != "",
+		"has_password":         true,
 		"name":                 user.Name,
 		"phone":                user.Phone,
 		"default_start_screen": user.DefaultStartScreen,
