@@ -42,7 +42,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	}
 
 	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, cfg.JWT)
-	propertyHandler := handler.NewPropertyHandler()
+	propertyHandler := handler.NewPropertyHandler(s3Svc)
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)
 	paymentHandler := handler.NewPaymentHandler()
@@ -96,6 +96,8 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.GET("/properties/:id", propertyHandler.Get)
 		protected.PUT("/properties/:id", propertyHandler.Update)
 		protected.DELETE("/properties/:id", propertyHandler.Delete)
+		protected.POST("/properties/:id/photos", propertyHandler.AddPhoto)
+		protected.DELETE("/photos/:photoId", propertyHandler.DeletePhoto)
 
 		// Attach tenant
 		protected.POST("/properties/:id/attach_tenant", tenantHandler.AttachToProperty)

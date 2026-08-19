@@ -1,20 +1,24 @@
 package handler
 
 import (
+	"context"
 	"log"
 	"net/http"
 
 	"rentmanager-server/internal/database"
 	"rentmanager-server/internal/model"
+	"rentmanager-server/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-type PropertyHandler struct{}
+type PropertyHandler struct {
+	s3 *service.S3Service
+}
 
-func NewPropertyHandler() *PropertyHandler {
-	return &PropertyHandler{}
+func NewPropertyHandler(s3 *service.S3Service) *PropertyHandler {
+	return &PropertyHandler{s3: s3}
 }
 
 func (h *PropertyHandler) List(c *gin.Context) {
@@ -102,6 +106,63 @@ func (h *PropertyHandler) Update(c *gin.Context) {
 func (h *PropertyHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	if err := database.DB.Delete(&model.Property{}, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// AddPhoto — добавляет фотографию к объекту (файл уже загружен в S3 через /upload).
+func (h *PropertyHandler) AddPhoto(c *gin.Context) {
+	propertyID := c.Param("id")
+
+	var property model.Property
+	if err := database.DB.First(&property, "id = ?", propertyID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "property not found"})
+		return
+	}
+
+	var req struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	photo := model.Photo{
+		ID:         uuid.New().String(),
+		PropertyID: propertyID,
+		URL:        req.URL,
+	}
+	if err := database.DB.Create(&photo).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, photo)
+}
+
+// DeletePhoto — удаляет фотографию из БД и из S3.
+func (h *PropertyHandler) DeletePhoto(c *gin.Context) {
+	photoID := c.Param("photoId")
+
+	var photo model.Photo
+	if err := database.DB.First(&photo, "id = ?", photoID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "photo not found"})
+		return
+	}
+
+	// Удаляем файл из S3, если URL указывает на S3
+	if h.s3 != nil {
+		key := h.s3.ExtractKey(photo.URL)
+		if key != "" {
+			if err := h.s3.Delete(context.Background(), key); err != nil {
+				log.Printf("WARNING: failed to delete photo from S3: %v", err)
+			}
+		}
+	}
+
+	if err := database.DB.Delete(&model.Photo{}, "id = ?", photoID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
