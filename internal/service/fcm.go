@@ -13,6 +13,7 @@ import (
 )
 
 const fcmTokenKeyPrefix = "fcm_tokens:"
+const fcmTokenOwnerPrefix = "fcm_token_owner:"
 
 type FCMService struct {
 	app *firebase.App
@@ -34,23 +35,41 @@ func (s *FCMService) tokenKey(userID string) string {
 
 // RegisterToken — привязывает FCM-токен к пользователю (хранится в Redis, переживает рестарты)
 func (s *FCMService) RegisterToken(userID, token string) {
-	if err := database.RDB.SAdd(context.Background(), s.tokenKey(userID), token).Err(); err != nil {
+	ctx := context.Background()
+	ownerKey := fcmTokenOwnerPrefix + token
+
+	if oldOwner, err := database.RDB.Get(ctx, ownerKey).Result(); err == nil && oldOwner != "" && oldOwner != userID {
+		database.RDB.SRem(ctx, s.tokenKey(oldOwner), token)
+		log.Printf("FCM: token moved from user %s to %s", oldOwner, userID)
+	}
+
+	if err := database.RDB.SAdd(ctx, s.tokenKey(userID), token).Err(); err != nil {
 		log.Printf("FCM: failed to persist token for user %s: %v", userID, err)
 		return
 	}
+	database.RDB.Set(ctx, ownerKey, userID, 0)
 	log.Printf("FCM: registered token for user %s", userID)
 }
 
 // RemoveToken — отвязывает FCM-токен от пользователя
 func (s *FCMService) RemoveToken(userID, token string) {
-	if err := database.RDB.SRem(context.Background(), s.tokenKey(userID), token).Err(); err != nil {
+	ctx := context.Background()
+	if err := database.RDB.SRem(ctx, s.tokenKey(userID), token).Err(); err != nil {
 		log.Printf("FCM: failed to remove token for user %s: %v", userID, err)
 	}
+	database.RDB.Del(ctx, fcmTokenOwnerPrefix+token)
 }
 
 // ClearUserTokens — удаляет все FCM-токены пользователя
 func (s *FCMService) ClearUserTokens(userID string) {
-	if err := database.RDB.Del(context.Background(), s.tokenKey(userID)).Err(); err != nil {
+	ctx := context.Background()
+	key := s.tokenKey(userID)
+	if tokens, err := database.RDB.SMembers(ctx, key).Result(); err == nil {
+		for _, t := range tokens {
+			database.RDB.Del(ctx, fcmTokenOwnerPrefix+t)
+		}
+	}
+	if err := database.RDB.Del(ctx, key).Err(); err != nil {
 		log.Printf("FCM: failed to clear tokens for user %s: %v", userID, err)
 	}
 }
