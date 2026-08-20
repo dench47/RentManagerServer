@@ -20,6 +20,8 @@ type Property struct {
 	ContractDate   *string  `gorm:"size:30" json:"contract_date"`
 	TenantID       *string  `gorm:"size:36;index" json:"tenant_id"`
 	Photos         []Photo  `gorm:"foreignKey:PropertyID" json:"photos,omitempty"`
+	Latitude       *float64 `json:"latitude"`
+	Longitude      *float64 `json:"longitude"`
 }
 
 // Photo — фотография объекта
