@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	gormlib "gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type SendCodeRequest struct {
@@ -236,12 +238,23 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	}
 
 	var rt model.RefreshToken
-	if err := database.DB.Where("token = ? AND expires_at > ?", req.RefreshToken, time.Now().UnixMilli()).First(&rt).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
+	err := database.DB.Transaction(func(tx *gormlib.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("token = ? AND expires_at > ?", req.RefreshToken, time.Now().UnixMilli()).
+			First(&rt).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&rt).Error
+	})
+	if err != nil {
+		if errors.Is(err, gormlib.ErrRecordNotFound) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
+		} else {
+			log.Printf("refresh failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "refresh failed"})
+		}
 		return
 	}
-
-	database.DB.Delete(&rt)
 
 	var user model.User
 	if err := database.DB.First(&user, "id = ?", rt.UserID).Error; err != nil {
@@ -249,8 +262,18 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	accessToken, _ := h.generateAccessToken(user)
-	newRefreshToken, _ := h.createRefreshToken(user.ID)
+	accessToken, err := h.generateAccessToken(user)
+	if err != nil {
+		log.Printf("refresh: generate access token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "refresh failed"})
+		return
+	}
+	newRefreshToken, err := h.createRefreshToken(user.ID)
+	if err != nil {
+		log.Printf("refresh: create refresh token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "refresh failed"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  accessToken,

@@ -104,7 +104,7 @@ type RefreshToken struct {
 	ID        string `gorm:"primaryKey;size:36" json:"id"`
 	UserID    string `gorm:"index;not null;size:36" json:"user_id"`
 	Token     string `gorm:"uniqueIndex;not null;size:255" json:"token"`
-	ExpiresAt int64  `gorm:"not null" json:"expires_at"`
+	ExpiresAt int64  `gorm:"not null;index" json:"expires_at"`
 	CreatedAt int64  `gorm:"autoCreateTime:milli" json:"created_at"`
 }
 
