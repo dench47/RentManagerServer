@@ -7,6 +7,12 @@ type Property struct {
 	Name           string   `gorm:"not null;size:200" json:"name"`
 	Address        string   `gorm:"size:500" json:"address"`
 	Area           *float64 `json:"area"`
+	Type           *string  `gorm:"size:50" json:"type"`
+	RentType       *string  `gorm:"size:20" json:"rent_type"`
+	Rooms          *string  `gorm:"size:50" json:"rooms"`
+	SleepingPlaces *string  `gorm:"size:20" json:"sleeping_places"`
+	Floor          *string  `gorm:"size:20" json:"floor"`
+	FloorsInHouse  *string  `gorm:"size:20" json:"floors_in_house"`
 	Description    *string  `gorm:"type:text" json:"description"`
 	TenantInfo     *string  `gorm:"type:text" json:"tenant_info"`
 	ServiceInfo    *string  `gorm:"type:text" json:"service_info"`
