@@ -4,12 +4,13 @@ services:
   postgres:
     image: postgres:18-alpine
     container_name: rentmanager-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: rentmanager
       POSTGRES_USER: rentmanager
-      POSTGRES_PASSWORD: rentmanager_secret
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
@@ -21,11 +22,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: rentmanager-redis
+    restart: unless-stopped
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -35,6 +39,7 @@ services:
   server:
     build: .
     container_name: rentmanager-server
+    restart: unless-stopped
     ports:
       - "8080:8080"
     env_file:

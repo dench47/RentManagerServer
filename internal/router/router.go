@@ -41,7 +41,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		}
 	}
 
-	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, cfg.JWT)
+	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, cfg.JWT, cfg.UploadDir)
 	propertyHandler := handler.NewPropertyHandler(s3Svc)
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)

@@ -5,7 +5,12 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"rentmanager-server/internal/config"
@@ -58,10 +63,11 @@ type AuthHandler struct {
 	s3        *service.S3Service
 	fcm       *service.FCMService
 	jwtCfg    config.JWTConfig
+	uploadDir string
 }
 
-func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, jwtCfg config.JWTConfig) *AuthHandler {
-	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, jwtCfg: jwtCfg}
+func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, jwtCfg config.JWTConfig, uploadDir string) *AuthHandler {
+	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, jwtCfg: jwtCfg, uploadDir: uploadDir}
 }
 
 // notifyNewLogin — отправляет FCM-уведомление на все устройства, кроме текущего
@@ -539,33 +545,121 @@ func (h *AuthHandler) UnregisterDevice(c *gin.Context) {
 func (h *AuthHandler) DeleteAccount(c *gin.Context) {
 	userID := c.GetString("userID")
 
+	// ID объектов пользователя — нужны для удаления связанных записей (фото, брони, чаты и т.д.)
+	var propertyIDs []string
+	database.DB.Model(&model.Property{}).Unscoped().
+		Where("user_id = ?", userID).Pluck("id", &propertyIDs)
+
+	// ID чатов, участником которых является пользователь
+	var chatIDs []string
+	database.DB.Model(&model.Chat{}).Unscoped().
+		Where("participant_ids LIKE ?", "%\""+userID+"\"%").
+		Pluck("id", &chatIDs)
+
+	// ID записей арендатора, где пользователь выступал арендатором у других арендодателей
+	var tenantIDs []string
+	database.DB.Model(&model.Tenant{}).Unscoped().
+		Where("user_id = ?", userID).Pluck("id", &tenantIDs)
+
+	// Собираем URL файлов (аватар + фотографии объектов), чтобы удалить их из S3 / с локального диска
+	var fileURLs []string
+	var user model.User
+	if err := database.DB.First(&user, "id = ?", userID).Error; err == nil && user.AvatarURL != "" {
+		fileURLs = append(fileURLs, user.AvatarURL)
+	}
+	if len(propertyIDs) > 0 {
+		var photoURLs []string
+		database.DB.Model(&model.Photo{}).Where("property_id IN ?", propertyIDs).Pluck("url", &photoURLs)
+		fileURLs = append(fileURLs, photoURLs...)
+	}
+
+	// ---- Удаление записей из БД ----
 	database.DB.Where("user_id = ?", userID).Delete(&model.RefreshToken{})
-	database.DB.Where("property_id IN (SELECT id FROM properties WHERE user_id = ?)", userID).Delete(&model.Photo{})
-	database.DB.Unscoped().Where("user_id = ?", userID).Delete(&model.Property{})
-	database.DB.Unscoped().Where("owner_id = ?", userID).Delete(&model.Tenant{})
-	database.DB.Unscoped().Where("user_id = ?", userID).Delete(&model.Meter{})
+
+	// Фото и брони объектов пользователя
+	if len(propertyIDs) > 0 {
+		database.DB.Where("property_id IN ?", propertyIDs).Delete(&model.Photo{})
+		database.DB.Unscoped().Where("property_id IN ?", propertyIDs).Delete(&model.Booking{})
+	}
+
+	// Сообщения: во всех чатах пользователя (включая полученные) + страховка по отправителю
+	if len(chatIDs) > 0 {
+		database.DB.Where("chat_id IN ?", chatIDs).Delete(&model.Message{})
+	}
 	database.DB.Where("sender_id = ?", userID).Delete(&model.Message{})
-	database.DB.Unscoped().Where("participant_ids LIKE ?", "%\""+userID+"\"%").Delete(&model.Chat{})
+	if len(chatIDs) > 0 {
+		database.DB.Unscoped().Where("id IN ?", chatIDs).Delete(&model.Chat{})
+	}
+
+	// Объекты, счётчики, платежи и графики платежей
+	database.DB.Unscoped().Where("user_id = ?", userID).Delete(&model.Property{})
+	database.DB.Unscoped().Where("user_id = ?", userID).Delete(&model.Meter{})
 	database.DB.Unscoped().Where("user_id = ?", userID).Delete(&model.Payment{})
 	database.DB.Unscoped().Where("user_id = ?", userID).Delete(&model.PaymentSchedule{})
 
-	var user model.User
-	if err := database.DB.First(&user, "id = ?", userID).Error; err == nil && user.AvatarURL != "" {
-		if h.s3 != nil {
-			key := h.s3.ExtractKey(user.AvatarURL)
-			if key != "" {
-				if err := h.s3.Delete(context.Background(), key); err != nil {
-					log.Printf("WARNING: failed to delete avatar from S3 during account deletion: %v", err)
-				}
-			}
-		}
+	// Арендаторы, которыми владеет пользователь
+	database.DB.Unscoped().Where("owner_id = ?", userID).Delete(&model.Tenant{})
+
+	// Если пользователь был арендатором у других арендодателей — отвязываем его от их объектов
+	if len(tenantIDs) > 0 {
+		database.DB.Model(&model.Property{}).
+			Where("tenant_id IN ?", tenantIDs).
+			Updates(map[string]interface{}{"tenant_id": nil, "status": "free"})
+		database.DB.Unscoped().Where("id IN ?", tenantIDs).Delete(&model.Tenant{})
 	}
 
+	// ---- Удаление файлов из S3 / локального диска ----
+	for _, rawURL := range fileURLs {
+		h.deleteStoredFile(rawURL)
+	}
+
+	// ---- Удаление самого аккаунта ----
 	database.DB.Unscoped().Where("id = ?", userID).Delete(&model.User{})
 	if h.fcm != nil {
 		h.fcm.ClearUserTokens(userID)
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "account deleted"})
+}
+
+// deleteStoredFile удаляет файл из S3, а при fallback на локальный диск — с диска.
+func (h *AuthHandler) deleteStoredFile(rawURL string) {
+	if rawURL == "" {
+		return
+	}
+
+	// S3
+	if h.s3 != nil {
+		if key := h.s3.ExtractKey(rawURL); key != "" {
+			if err := h.s3.Delete(context.Background(), key); err != nil {
+				log.Printf("WARNING: failed to delete file from S3 during account deletion: %v", err)
+			}
+			return
+		}
+	}
+
+	// Локальный диск (fallback): URL вида http(s)://host/uploads/<file>
+	if filename := localUploadFilename(rawURL); filename != "" && h.uploadDir != "" {
+		p := filepath.Join(h.uploadDir, filename)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARNING: failed to delete local file %s during account deletion: %v", p, err)
+		}
+	}
+}
+
+// localUploadFilename извлекает имя файла из URL локального upload-эндпоинта (/uploads/<file>).
+func localUploadFilename(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" {
+		return ""
+	}
+	if !strings.Contains(u.Path, "/uploads/") {
+		return ""
+	}
+	name := path.Base(u.Path)
+	if name == "." || name == "/" || name == "" {
+		return ""
+	}
+	return name
 }
 
 func (h *AuthHandler) createRefreshToken(userID string) (string, error) {
