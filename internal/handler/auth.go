@@ -778,14 +778,32 @@ func (h *AuthHandler) ListDevices(c *gin.Context) {
 }
 
 // RevokeDevice — отзывает доверенное устройство по его ID (protected).
+// При отзыве отправляет FCM push device_revoked на все устройства пользователя:
+// отозванное устройство получает сигнал на мгновенный разлогин (logout_all),
+// остальные — обновляют список доверенных устройств.
 func (h *AuthHandler) RevokeDevice(c *gin.Context) {
 	userID := c.GetString("userID")
 	deviceRowID := c.Param("deviceId")
+
+	// Читаем device_id до удаления — нужен для push
+	var dev model.TrustedDevice
+	database.DB.Where("user_id = ? AND id = ?", userID, deviceRowID).First(&dev)
+
 	res := database.DB.Where("user_id = ? AND id = ?", userID, deviceRowID).Delete(&model.TrustedDevice{})
 	if res.Error != nil || res.RowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 		return
 	}
+
+	// Push на ВСЕ устройства: у отозванного — логаут, у остальных — обновление списка
+	if h.fcm != nil && dev.DeviceID != "" {
+		go h.fcm.SendToUser(userID, map[string]string{
+			"type":      "device_revoked",
+			"device_id": dev.DeviceID,
+		}, "")
+		log.Printf("REVOKE: device=%s (%s) revoked by user=%s — push sent", dev.DeviceID, dev.Name, userID)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "device revoked"})
 }
 
