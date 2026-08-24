@@ -42,6 +42,7 @@ func InitPostgres(cfg config.DBConfig) {
 	err = DB.AutoMigrate(
 		&model.User{},
 		&model.TrustedDevice{},
+		&model.TelegramBinding{},
 		&model.Property{},
 		&model.Photo{},
 		&model.Tenant{},

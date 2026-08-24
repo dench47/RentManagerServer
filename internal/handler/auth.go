@@ -63,12 +63,13 @@ type AuthHandler struct {
 	callCheck *service.CallCheckService
 	s3        *service.S3Service
 	fcm       *service.FCMService
+	telegram  *service.TelegramService
 	jwtCfg    config.JWTConfig
 	uploadDir string
 }
 
-func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, jwtCfg config.JWTConfig, uploadDir string) *AuthHandler {
-	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, jwtCfg: jwtCfg, uploadDir: uploadDir}
+func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, telegram *service.TelegramService, jwtCfg config.JWTConfig, uploadDir string) *AuthHandler {
+	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, telegram: telegram, jwtCfg: jwtCfg, uploadDir: uploadDir}
 }
 
 // notifyNewLogin — отправляет FCM-уведомление на все устройства, кроме текущего
@@ -211,14 +212,16 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Count(&trustedCount)
 
 	canPush := trustedCount > 0 && h.fcm != nil
-	log.Printf("LOGIN: phone=%s device=%s trusted=%v hasPassword=%v canPush=%v",
-		req.Phone, req.DeviceID, trusted, user.HasPassword, canPush)
+	canTelegram := h.telegram != nil && h.telegram.IsEnabled() && h.telegram.HasBinding(user.ID)
+	log.Printf("LOGIN: phone=%s device=%s trusted=%v hasPassword=%v canPush=%v canTelegram=%v",
+		req.Phone, req.DeviceID, trusted, user.HasPassword, canPush, canTelegram)
 
 	c.JSON(http.StatusOK, gin.H{
 		"exists":               true,
 		"has_password":         user.HasPassword,
 		"is_trusted_device":    trusted,
 		"can_push":             canPush,
+		"can_telegram":         canTelegram,
 		"name":                 user.Name,
 		"phone":                user.Phone,
 		"default_start_screen": user.DefaultStartScreen,
@@ -837,6 +840,9 @@ func (h *AuthHandler) DeleteAccount(c *gin.Context) {
 	}
 	database.DB.Where("user_id = ?", userID).Delete(&model.RefreshToken{})
 	database.DB.Where("user_id = ?", userID).Delete(&model.TrustedDevice{})
+	if h.telegram != nil {
+		h.telegram.UnlinkByUserID(userID)
+	}
 
 	// ID объектов пользователя — нужны для удаления связанных записей (фото, брони, чаты и т.д.)
 	var propertyIDs []string

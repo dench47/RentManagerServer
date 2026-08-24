@@ -16,6 +16,12 @@ type Config struct {
 	DownloadDir   string
 	MaxUploadSize int64
 	APKBaseURL    string
+	Telegram      TelegramConfig
+}
+
+type TelegramConfig struct {
+	BotToken    string
+	BotUsername string
 }
 
 type DBConfig struct {
@@ -90,6 +96,10 @@ func Load() *Config {
 		DownloadDir:   getEnv("DOWNLOAD_DIR", "./downloads"),
 		MaxUploadSize: int64(getEnvAsInt("MAX_UPLOAD_SIZE", 10485760)),
 		APKBaseURL:    getEnv("APK_BASE_URL", "http://45.11.92.171:8080"),
+		Telegram: TelegramConfig{
+			BotToken:    getEnv("TELEGRAM_BOT_TOKEN", ""),
+			BotUsername: getEnv("TELEGRAM_BOT_USERNAME", ""),
+		},
 	}
 }
 

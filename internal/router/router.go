@@ -25,6 +25,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	// Init handlers
 	callCheckSvc := service.NewCallCheckService(getEnvDefault("CALLCHECK_API_ID", "stub"))
 	s3Svc := service.NewS3Service(cfg.S3)
+	telegramSvc := service.NewTelegramService(cfg.Telegram)
 
 	// FCM
 	var fcmSvc *service.FCMService
@@ -41,7 +42,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		}
 	}
 
-	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, cfg.JWT, cfg.UploadDir)
+	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, telegramSvc, cfg.JWT, cfg.UploadDir)
 	propertyHandler := handler.NewPropertyHandler(s3Svc)
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)
@@ -61,6 +62,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 	// Public version endpoint
 	api.GET("/version", versionHandler.GetVersion)
 
+	// Telegram webhook (public)
+	api.POST("/telegram/webhook", authHandler.TelegramWebhook)
+
 	// Public auth
 	auth := api.Group("/auth")
 	{
@@ -74,6 +78,10 @@ func Setup(cfg *config.Config) *gin.Engine {
 		// Подтверждение входа с нового устройства (Device Trust)
 		auth.POST("/login/request_approval", authHandler.RequestLoginApproval)
 		auth.GET("/login/status", authHandler.LoginStatus)
+
+		// Вход через Telegram (код в мессенджер)
+		auth.POST("/login/telegram_code", authHandler.TelegramSendCode)
+		auth.POST("/login/telegram_verify", authHandler.TelegramVerifyCode)
 	}
 
 	// Protected routes
@@ -97,6 +105,11 @@ func Setup(cfg *config.Config) *gin.Engine {
 		// Управление доверенными устройствами
 		protected.GET("/auth/devices", authHandler.ListDevices)
 		protected.DELETE("/auth/devices/:deviceId", authHandler.RevokeDevice)
+
+		// Telegram привязка
+		protected.POST("/auth/telegram/link", authHandler.TelegramLink)
+		protected.GET("/auth/telegram/status", authHandler.TelegramStatus)
+		protected.POST("/auth/telegram/unlink", authHandler.TelegramUnlink)
 
 		// Users
 		protected.GET("/users/me", authHandler.GetMe)
