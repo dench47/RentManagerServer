@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -120,13 +121,58 @@ func (h *AuthHandler) SaveName(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// Login — проверяет телефон в БД.
-// Если PIN отключён (password_hash пустой) — выдаём токены сразу (вход без PIN).
-// Если PIN есть — токены не выдаются: вход по PIN через verify_password.
+// isTrustedDevice — проверяет, верифицировано ли устройство для пользователя.
+func (h *AuthHandler) isTrustedDevice(userID, deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	var count int64
+	database.DB.Model(&model.TrustedDevice{}).
+		Where("user_id = ? AND device_id = ?", userID, deviceID).
+		Count(&count)
+	return count > 0
+}
+
+// trustDevice — добавляет устройство в доверенные (или обновляет время последнего входа).
+// При создании записи все устройства пользователя получают push devices_changed,
+// чтобы открытые списки устройств обновились мгновенно.
+func (h *AuthHandler) trustDevice(userID, deviceID, deviceName string) {
+	if deviceID == "" {
+		return
+	}
+	var dev model.TrustedDevice
+	err := database.DB.Where("user_id = ? AND device_id = ?", userID, deviceID).First(&dev).Error
+	if err != nil {
+		dev = model.TrustedDevice{
+			ID:         uuid.New().String(),
+			UserID:     userID,
+			DeviceID:   deviceID,
+			Name:       deviceName,
+			LastUsedAt: time.Now().UnixMilli(),
+		}
+		if err := database.DB.Create(&dev).Error; err != nil {
+			log.Printf("trustDevice: create failed: %v", err)
+			return
+		}
+		if h.fcm != nil {
+			go h.fcm.SendToUser(userID, map[string]string{
+				"type": "devices_changed",
+			}, "")
+		}
+	} else {
+		database.DB.Model(&dev).Update("last_used_at", time.Now().UnixMilli())
+	}
+}
+
+// Login — проверяет телефон в БД и определяет сценарий входа.
+// Токены выдаются ТОЛЬКО доверенному устройству, у которого не установлен PIN.
+// Новое устройство проходит подтверждение: push-одобрение или звонок (callcheck).
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req struct {
-		Phone    string `json:"phone" binding:"required"`
-		FcmToken string `json:"fcm_token"`
+		Phone      string `json:"phone" binding:"required"`
+		FcmToken   string `json:"fcm_token"`
+		DeviceID   string `json:"device_id"`
+		DeviceName string `json:"device_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
@@ -139,24 +185,36 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// PIN отключён — вход без PIN
-	if user.PasswordHash == "" {
+	trusted := h.isTrustedDevice(user.ID, req.DeviceID)
+
+	// Доверенное устройство без PIN — выдаём токены сразу (пользователь не защищает аккаунт PIN).
+	// Дыра старой логики закрыта: для НЕдоверенного устройства токены больше не выдаются.
+	if trusted && user.PasswordHash == "" {
 		tokenStr, _ := h.generateAccessToken(user)
 		refreshToken, _ := h.createRefreshToken(user.ID)
 		h.notifyNewLogin(user.ID, req.FcmToken)
 		c.JSON(http.StatusOK, gin.H{
-			"exists":        true,
-			"has_password":  false,
-			"access_token":  tokenStr,
-			"refresh_token": refreshToken,
-			"user":          user,
+			"exists":            true,
+			"has_password":      false,
+			"is_trusted_device": true,
+			"access_token":      tokenStr,
+			"refresh_token":     refreshToken,
+			"user":              user,
 		})
 		return
 	}
 
+	// Есть ли другие доверенные устройства → можно подтвердить вход push'ем
+	var trustedCount int64
+	database.DB.Model(&model.TrustedDevice{}).
+		Where("user_id = ?", user.ID).
+		Count(&trustedCount)
+
 	c.JSON(http.StatusOK, gin.H{
 		"exists":               true,
-		"has_password":         true,
+		"has_password":         user.HasPassword,
+		"is_trusted_device":    trusted,
+		"can_push":             trustedCount > 0 && h.fcm != nil,
 		"name":                 user.Name,
 		"phone":                user.Phone,
 		"default_start_screen": user.DefaultStartScreen,
@@ -184,11 +242,14 @@ func (h *AuthHandler) CallCheckAdd(c *gin.Context) {
 	})
 }
 
-// CallCheckStatus — проверяет статус звонка, создаёт пользователя, выдаёт токены
+// CallCheckStatus — проверяет статус звонка, создаёт пользователя, выдаёт токены.
+// Успешный звонок = доказательство владения номером → устройство становится доверенным.
 func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
 	var req struct {
-		Phone    string `json:"phone" binding:"required"`
-		FcmToken string `json:"fcm_token"`
+		Phone      string `json:"phone" binding:"required"`
+		FcmToken   string `json:"fcm_token"`
+		DeviceID   string `json:"device_id"`
+		DeviceName string `json:"device_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
@@ -205,6 +266,7 @@ func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
 		return
 	}
 	var user model.User
+	isNewUser := false
 	err = database.DB.Where("phone = ?", req.Phone).First(&user).Error
 	if err != nil {
 		user = model.User{
@@ -212,12 +274,16 @@ func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
 			Phone:     req.Phone,
 		}
 		database.DB.Create(&user)
+		isNewUser = true
 	}
 	tokenStr, _ := h.generateAccessToken(user)
 	refreshToken, _ := h.createRefreshToken(user.ID)
+	h.trustDevice(user.ID, req.DeviceID, req.DeviceName)
 	h.notifyNewLogin(user.ID, req.FcmToken)
 	c.JSON(http.StatusOK, gin.H{
 		"verified":      true,
+		"is_new_user":   isNewUser,
+		"has_password":  user.HasPassword,
 		"access_token":  tokenStr,
 		"refresh_token": refreshToken,
 		"user":          user,
@@ -487,10 +553,128 @@ func (h *AuthHandler) VerifyPassword(c *gin.Context) {
 	})
 }
 
-// LogoutAll — удаляет все refresh-токены и инкрементит token_version
+// loginRequestPayload — структура запроса подтверждения входа в Redis.
+type loginRequestPayload struct {
+	UserID     string `json:"user_id"`
+	Phone      string `json:"phone"`
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	Status     string `json:"status"` // pending / approved / denied
+}
+
+func (h *AuthHandler) readLoginRequest(c *gin.Context, requestID string) (*loginRequestPayload, error) {
+	raw, err := database.RDB.Get(c, "login_request:"+requestID).Result()
+	if err != nil {
+		return nil, errors.New("request expired")
+	}
+	var p loginRequestPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return nil, errors.New("corrupted request")
+	}
+	return &p, nil
+}
+
+func (h *AuthHandler) writeLoginRequest(c *gin.Context, p *loginRequestPayload, requestID string) {
+	data, _ := json.Marshal(p)
+	database.RDB.Set(c, "login_request:"+requestID, data, 5*time.Minute)
+}
+
+// RequestLoginApproval — новое устройство запрашивает подтверждение входа.
+// На все доверенные устройства пользователя уходит push с request_id.
+func (h *AuthHandler) RequestLoginApproval(c *gin.Context) {
+	var req struct {
+		Phone      string `json:"phone" binding:"required"`
+		DeviceID   string `json:"device_id"`
+		DeviceName string `json:"device_name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
+		return
+	}
+
+	var user model.User
+	if err := database.DB.Where("phone = ?", req.Phone).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	requestID := uuid.New().String()
+	p := &loginRequestPayload{
+		UserID:     user.ID,
+		Phone:      req.Phone,
+		DeviceID:   req.DeviceID,
+		DeviceName: req.DeviceName,
+		Status:     "pending",
+	}
+	h.writeLoginRequest(c, p, requestID)
+
+	if h.fcm != nil {
+		name := req.DeviceName
+		if name == "" {
+			name = "нового устройства"
+		} else {
+			name = "устройства " + name
+		}
+		go h.fcm.SendToUser(user.ID, map[string]string{
+			"type":        "login_request",
+			"request_id":  requestID,
+			"title":       "Подтвердите вход",
+			"body":        "Вход с " + name,
+			"device_name": req.DeviceName,
+			"timestamp":   strconv.FormatInt(time.Now().Unix(), 10),
+		}, "")
+	}
+
+	c.JSON(http.StatusOK, gin.H{"request_id": requestID, "expires_in": 300})
+}
+
+// LoginStatus — новое устройство опрашивает статус подтверждения входа.
+// При одобрении выдаёт токены и добавляет устройство в доверенные.
+func (h *AuthHandler) LoginStatus(c *gin.Context) {
+	requestID := c.Query("request_id")
+	deviceID := c.Query("device_id")
+	if requestID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request_id required"})
+		return
+	}
+	p, err := h.readLoginRequest(c, requestID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "expired"})
+		return
+	}
+	switch p.Status {
+	case "approved":
+		database.RDB.Del(c, "login_request:"+requestID)
+		var user model.User
+		if err := database.DB.First(&user, "id = ?", p.UserID).Error; err != nil {
+			c.JSON(http.StatusOK, gin.H{"status": "denied"})
+			return
+		}
+		tokenStr, _ := h.generateAccessToken(user)
+		refreshToken, _ := h.createRefreshToken(user.ID)
+		h.trustDevice(user.ID, deviceID, p.DeviceName)
+		c.JSON(http.StatusOK, gin.H{
+			"status":        "approved",
+			"is_new_user":   false,
+			"has_password":  user.HasPassword,
+			"access_token":  tokenStr,
+			"refresh_token": refreshToken,
+			"user":          user,
+		})
+	case "denied":
+		database.RDB.Del(c, "login_request:"+requestID)
+		c.JSON(http.StatusOK, gin.H{"status": "denied"})
+	default:
+		c.JSON(http.StatusOK, gin.H{"status": "pending"})
+	}
+}
+
+// Также сбрасывает доверенные устройства: после этого каждое устройство
+// заново проходит подтверждение (push/звонок) при следующем входе.
 func (h *AuthHandler) LogoutAll(c *gin.Context) {
 	userID := c.GetString("userID")
 	database.DB.Where("user_id = ?", userID).Delete(&model.RefreshToken{})
+	database.DB.Where("user_id = ?", userID).Delete(&model.TrustedDevice{})
 	database.DB.Model(&model.User{}).Where("id = ?", userID).
 		Update("token_version", gormlib.Expr("token_version + 1"))
 
@@ -503,6 +687,95 @@ func (h *AuthHandler) LogoutAll(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "logged out from all devices"})
+}
+
+// ApproveLogin — доверенное устройство одобряет вход с нового устройства (protected).
+func (h *AuthHandler) ApproveLogin(c *gin.Context) {
+	userID := c.GetString("userID")
+	var req struct {
+		RequestID string `json:"request_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request_id required"})
+		return
+	}
+	p, err := h.readLoginRequest(c, req.RequestID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "request expired"})
+		return
+	}
+	if p.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "foreign request"})
+		return
+	}
+	p.Status = "approved"
+	h.writeLoginRequest(c, p, req.RequestID)
+	c.JSON(http.StatusOK, gin.H{"message": "approved"})
+}
+
+// DenyLogin — доверенное устройство отклоняет попытку входа (protected).
+func (h *AuthHandler) DenyLogin(c *gin.Context) {
+	userID := c.GetString("userID")
+	var req struct {
+		RequestID string `json:"request_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request_id required"})
+		return
+	}
+	p, err := h.readLoginRequest(c, req.RequestID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "request expired"})
+		return
+	}
+	if p.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "foreign request"})
+		return
+	}
+	p.Status = "denied"
+	h.writeLoginRequest(c, p, req.RequestID)
+	c.JSON(http.StatusOK, gin.H{"message": "denied"})
+}
+
+// TrustedDeviceDto — доверенное устройство для отдачи клиенту.
+type TrustedDeviceDto struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	CreatedAt     int64  `json:"created_at"`
+	LastUsedAt    int64  `json:"last_used_at"`
+	CurrentDevice bool   `json:"current_device"`
+}
+
+// ListDevices — список доверенных устройств текущего пользователя (protected).
+func (h *AuthHandler) ListDevices(c *gin.Context) {
+	userID := c.GetString("userID")
+	currentDeviceID := c.Query("current_device_id")
+	var devices []model.TrustedDevice
+	database.DB.Where("user_id = ?", userID).Order("created_at ASC").Find(&devices)
+
+	result := make([]TrustedDeviceDto, 0, len(devices))
+	for _, d := range devices {
+		result = append(result, TrustedDeviceDto{
+			ID:            d.ID,
+			Name:          d.Name,
+			CreatedAt:     d.CreatedAt,
+			LastUsedAt:    d.LastUsedAt,
+			CurrentDevice: currentDeviceID != "" && d.DeviceID == currentDeviceID,
+		})
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// RevokeDevice — отзывает доверенное устройство по его ID (protected).
+func (h *AuthHandler) RevokeDevice(c *gin.Context) {
+	userID := c.GetString("userID")
+	deviceRowID := c.Param("deviceId")
+	res := database.DB.Where("user_id = ? AND id = ?", userID, deviceRowID).Delete(&model.TrustedDevice{})
+	if res.Error != nil || res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "device revoked"})
 }
 
 // RegisterDevice — регистрирует FCM-токен для push-уведомлений
@@ -544,6 +817,18 @@ func (h *AuthHandler) UnregisterDevice(c *gin.Context) {
 // DeleteAccount — жёсткое удаление пользователя и всех его данных
 func (h *AuthHandler) DeleteAccount(c *gin.Context) {
 	userID := c.GetString("userID")
+
+	// Разлогиниваем ВСЕ устройства ДО удаления аккаунта:
+	// push logout_all (FCM-токены ещё живы) + отзыв refresh-токенов.
+	// Без этого другие устройства продолжали бы работать: access-токен до часа,
+	// refresh — до 30 дней, бесконечно обновляясь.
+	if h.fcm != nil {
+		h.fcm.SendToUser(userID, map[string]string{
+			"type": "logout_all",
+		}, "")
+	}
+	database.DB.Where("user_id = ?", userID).Delete(&model.RefreshToken{})
+	database.DB.Where("user_id = ?", userID).Delete(&model.TrustedDevice{})
 
 	// ID объектов пользователя — нужны для удаления связанных записей (фото, брони, чаты и т.д.)
 	var propertyIDs []string

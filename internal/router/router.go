@@ -70,6 +70,10 @@ func Setup(cfg *config.Config) *gin.Engine {
 		auth.POST("/refresh", authHandler.RefreshToken)
 		auth.POST("/verify_password", authHandler.VerifyPassword)
 		auth.GET("/pin_attempts", authHandler.PinAttempts)
+
+		// Подтверждение входа с нового устройства (Device Trust)
+		auth.POST("/login/request_approval", authHandler.RequestLoginApproval)
+		auth.GET("/login/status", authHandler.LoginStatus)
 	}
 
 	// Protected routes
@@ -85,6 +89,14 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/auth/register_device", authHandler.RegisterDevice)
 		protected.POST("/auth/unregister_device", authHandler.UnregisterDevice)
 		protected.DELETE("/auth/account", authHandler.DeleteAccount)
+
+		// Подтверждение входа: действия доверенного устройства
+		protected.POST("/auth/login/approve", authHandler.ApproveLogin)
+		protected.POST("/auth/login/deny", authHandler.DenyLogin)
+
+		// Управление доверенными устройствами
+		protected.GET("/auth/devices", authHandler.ListDevices)
+		protected.DELETE("/auth/devices/:deviceId", authHandler.RevokeDevice)
 
 		// Users
 		protected.GET("/users/me", authHandler.GetMe)

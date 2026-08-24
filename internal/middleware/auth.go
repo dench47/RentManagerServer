@@ -50,14 +50,20 @@ func AuthMiddleware(cfg config.JWTConfig) gin.HandlerFunc {
 			return
 		}
 
-		// Проверяем, не отозван ли токен (logoutAll / сброс PIN)
+		// Проверяем, что пользователь существует и токен не отозван
+		// (logoutAll / сброс PIN / УДАЛЕНИЕ АККАУНТА).
+		// Раньше отсутствие пользователя в БД молча пропускало проверку —
+		// после удаления аккаунта чужие access-токены продолжали работать.
 		var user model.User
-		if err := database.DB.Select("token_version").First(&user, "id = ?", claims.UserID).Error; err == nil {
-			if user.TokenVersion != claims.TokenVersion {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Token revoked"})
-				c.Abort()
-				return
-			}
+		if err := database.DB.Select("token_version").First(&user, "id = ?", claims.UserID).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token revoked"})
+			c.Abort()
+			return
+		}
+		if user.TokenVersion != claims.TokenVersion {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token revoked"})
+			c.Abort()
+			return
 		}
 
 		c.Set("userID", claims.UserID)

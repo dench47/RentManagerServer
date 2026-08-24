@@ -23,3 +23,15 @@ func (u *User) AfterFind(tx *gorm.DB) error {
 	u.HasPassword = u.PasswordHash != ""
 	return nil
 }
+
+// TrustedDevice — устройство, прошедшее верификацию (звонок / push-подтверждение).
+// На доверенном устройстве вход выполняется по локальному PIN/биометрии,
+// с нового устройства требуется подтверждение (push или звонок).
+type TrustedDevice struct {
+	ID         string `gorm:"primaryKey;size:36" json:"id"`
+	UserID     string `gorm:"index;not null;size:36" json:"user_id"`
+	DeviceID   string `gorm:"index;not null;size:64;uniqueIndex:idx_user_device" json:"device_id"`
+	Name       string `gorm:"size:120" json:"name"` // человекочитаемое имя: "Xiaomi Redmi Note 12"
+	CreatedAt  int64  `gorm:"autoCreateTime:milli" json:"created_at"`
+	LastUsedAt int64  `json:"last_used_at"`
+}
