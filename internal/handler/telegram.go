@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -156,6 +157,20 @@ func (h *AuthHandler) TelegramVerifyCode(c *gin.Context) {
 	refreshToken, _ := h.createRefreshToken(user.ID)
 	h.trustDevice(user.ID, req.DeviceID, req.DeviceName)
 	h.notifyNewLogin(user.ID, req.FcmToken)
+
+	// Успешный вход через Telegram — чистим все pending login_request для этого телефона,
+	// чтобы на доверенных устройствах не висел бесконечный диалог «Это вы?»
+	keys, _ := database.RDB.Keys(c.Request.Context(), "login_request:*").Result()
+	for _, key := range keys {
+		raw, err := database.RDB.Get(c.Request.Context(), key).Result()
+		if err != nil {
+			continue
+		}
+		var p loginRequestPayload
+		if json.Unmarshal([]byte(raw), &p) == nil && p.Phone == req.Phone {
+			database.RDB.Del(c.Request.Context(), key)
+		}
+	}
 
 	log.Printf("TELEGRAM VERIFY: phone=%s device=%s", req.Phone, req.DeviceID)
 	c.JSON(http.StatusOK, gin.H{
