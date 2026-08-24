@@ -210,11 +210,15 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Where("user_id = ?", user.ID).
 		Count(&trustedCount)
 
+	canPush := trustedCount > 0 && h.fcm != nil
+	log.Printf("LOGIN: phone=%s device=%s trusted=%v hasPassword=%v canPush=%v",
+		req.Phone, req.DeviceID, trusted, user.HasPassword, canPush)
+
 	c.JSON(http.StatusOK, gin.H{
 		"exists":               true,
 		"has_password":         user.HasPassword,
 		"is_trusted_device":    trusted,
-		"can_push":             trustedCount > 0 && h.fcm != nil,
+		"can_push":             canPush,
 		"name":                 user.Name,
 		"phone":                user.Phone,
 		"default_start_screen": user.DefaultStartScreen,
@@ -280,6 +284,8 @@ func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
 	refreshToken, _ := h.createRefreshToken(user.ID)
 	h.trustDevice(user.ID, req.DeviceID, req.DeviceName)
 	h.notifyNewLogin(user.ID, req.FcmToken)
+	log.Printf("CALLCHECK: verified phone=%s new_user=%v device=%s (%s)",
+		req.Phone, isNewUser, req.DeviceID, req.DeviceName)
 	c.JSON(http.StatusOK, gin.H{
 		"verified":      true,
 		"is_new_user":   isNewUser,
@@ -653,6 +659,8 @@ func (h *AuthHandler) LoginStatus(c *gin.Context) {
 		tokenStr, _ := h.generateAccessToken(user)
 		refreshToken, _ := h.createRefreshToken(user.ID)
 		h.trustDevice(user.ID, deviceID, p.DeviceName)
+		log.Printf("LOGIN_STATUS: request=%s approved for user=%s, trusted device added (%s)",
+			requestID, p.UserID, deviceID)
 		c.JSON(http.StatusOK, gin.H{
 			"status":        "approved",
 			"is_new_user":   false,
@@ -838,7 +846,7 @@ func (h *AuthHandler) DeleteAccount(c *gin.Context) {
 	// ID чатов, участником которых является пользователь
 	var chatIDs []string
 	database.DB.Model(&model.Chat{}).Unscoped().
-		Where("participant_ids LIKE ?", "%\""+userID+"\"%").
+		Where("participant_ids::text LIKE ?", "%\""+userID+"\"%").
 		Pluck("id", &chatIDs)
 
 	// ID записей арендатора, где пользователь выступал арендатором у других арендодателей

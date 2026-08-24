@@ -61,6 +61,30 @@ func InitPostgres(cfg config.DBConfig) {
 
 	// Фоновая очистка протухших refresh-токенов, чтобы таблица не росла.
 	go startRefreshTokenCleanup()
+
+	// Очистка trust-записей устройств, чьи пользователи удалены
+	// (сироты могли остаться от удалений до внедрения Device Trust).
+	go startTrustedDevicesCleanup()
+}
+
+// startTrustedDevicesCleanup периодически удаляет доверенные устройства
+// несуществующих пользователей.
+func startTrustedDevicesCleanup() {
+	clean := func() {
+		res := DB.Exec("DELETE FROM trusted_devices WHERE user_id NOT IN (SELECT id FROM users)")
+		if res.Error != nil {
+			log.Printf("trusted devices cleanup failed: %v", res.Error)
+		} else if res.RowsAffected > 0 {
+			log.Printf("trusted devices cleanup: removed %d orphaned records", res.RowsAffected)
+		}
+	}
+
+	clean() // сразу при старте
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		clean()
+	}
 }
 
 // startRefreshTokenCleanup периодически удаляет истёкшие refresh-токены.
