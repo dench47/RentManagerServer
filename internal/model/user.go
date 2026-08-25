@@ -11,6 +11,7 @@ type User struct {
 	LegalName          string `gorm:"size:200" json:"legal_name"`
 	AvatarURL          string `gorm:"size:500" json:"avatar_url"`
 	Email              string `gorm:"size:200" json:"email"`
+	EmailVerified      bool   `gorm:"default:false" json:"email_verified"`
 	TokenVersion       int    `gorm:"default:0" json:"token_version"`
 	PasswordHash       string `gorm:"size:255" json:"-"`
 	HasPassword        bool   `gorm:"-" json:"has_password"`

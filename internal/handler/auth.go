@@ -64,12 +64,13 @@ type AuthHandler struct {
 	s3        *service.S3Service
 	fcm       *service.FCMService
 	telegram  *service.TelegramService
+	email     *service.EmailService
 	jwtCfg    config.JWTConfig
 	uploadDir string
 }
 
-func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, telegram *service.TelegramService, jwtCfg config.JWTConfig, uploadDir string) *AuthHandler {
-	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, telegram: telegram, jwtCfg: jwtCfg, uploadDir: uploadDir}
+func NewAuthHandler(sms *service.SMSService, callCheck *service.CallCheckService, s3 *service.S3Service, fcm *service.FCMService, telegram *service.TelegramService, email *service.EmailService, jwtCfg config.JWTConfig, uploadDir string) *AuthHandler {
+	return &AuthHandler{callCheck: callCheck, s3: s3, fcm: fcm, telegram: telegram, email: email, jwtCfg: jwtCfg, uploadDir: uploadDir}
 }
 
 // notifyNewLogin — отправляет FCM-уведомление на все устройства, кроме текущего
@@ -617,21 +618,39 @@ func (h *AuthHandler) RequestLoginApproval(c *gin.Context) {
 	}
 	h.writeLoginRequest(c, p, requestID)
 
+	// Push только на ДОВЕРЕННЫЕ устройства: недоверенное (в т.ч. само запрашивающее)
+	// не должно получать login_request.
 	if h.fcm != nil {
+		var trusted []model.TrustedDevice
+		database.DB.Where("user_id = ?", user.ID).Find(&trusted)
+
+		var deviceIDs []string
+		for _, d := range trusted {
+			if d.DeviceID != "" && d.DeviceID != req.DeviceID {
+				deviceIDs = append(deviceIDs, d.DeviceID)
+			}
+		}
+
 		name := req.DeviceName
 		if name == "" {
 			name = "нового устройства"
 		} else {
 			name = "устройства " + name
 		}
-		go h.fcm.SendToUser(user.ID, map[string]string{
+		data := map[string]string{
 			"type":        "login_request",
 			"request_id":  requestID,
 			"title":       "Подтвердите вход",
 			"body":        "Вход с " + name,
 			"device_name": req.DeviceName,
 			"timestamp":   strconv.FormatInt(time.Now().Unix(), 10),
-		}, "")
+		}
+
+		if len(deviceIDs) > 0 {
+			go h.fcm.SendToDeviceIDs(user.ID, deviceIDs, data)
+		} else {
+			log.Printf("LOGIN_REQUEST: no trusted devices to notify for user=%s", user.ID)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"request_id": requestID, "expires_in": 300})
@@ -795,12 +814,19 @@ func (h *AuthHandler) RevokeDevice(c *gin.Context) {
 		return
 	}
 
-	// Push на ВСЕ устройства: у отозванного — логаут, у остальных — обновление списка
+	// Push на ВСЕ устройства (включая отозванное): отозванное разлогинивается,
+	// остальные обновляют список доверенных устройств.
+	// ВАЖНО: отправляем СИНХРОННО и ДО удаления FCM-токена отозванного устройства —
+	// иначе push до него физически не дойдёт и оно не разлогинится.
 	if h.fcm != nil && dev.DeviceID != "" {
-		go h.fcm.SendToUser(userID, map[string]string{
+		h.fcm.SendToUser(userID, map[string]string{
 			"type":      "device_revoked",
 			"device_id": dev.DeviceID,
 		}, "")
+
+		// Токен отозванного удаляем ПОСЛЕ отправки — дальше он не нужен:
+		// устройство больше не должно получать push'ы пользователя.
+		h.fcm.RemoveTokenForDevice(userID, dev.DeviceID)
 		log.Printf("REVOKE: device=%s (%s) revoked by user=%s — push sent", dev.DeviceID, dev.Name, userID)
 	}
 
@@ -811,7 +837,8 @@ func (h *AuthHandler) RevokeDevice(c *gin.Context) {
 func (h *AuthHandler) RegisterDevice(c *gin.Context) {
 	userID := c.GetString("userID")
 	var req struct {
-		Token string `json:"token" binding:"required"`
+		Token    string `json:"token" binding:"required"`
+		DeviceID string `json:"device_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
@@ -819,7 +846,7 @@ func (h *AuthHandler) RegisterDevice(c *gin.Context) {
 	}
 
 	if h.fcm != nil {
-		h.fcm.RegisterToken(userID, req.Token)
+		h.fcm.RegisterToken(userID, req.Token, req.DeviceID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "device registered"})

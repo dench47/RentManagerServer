@@ -14,6 +14,7 @@ import (
 
 const fcmTokenKeyPrefix = "fcm_tokens:"
 const fcmTokenOwnerPrefix = "fcm_token_owner:"
+const fcmDeviceKeyPrefix = "fcm_device:"
 
 type FCMService struct {
 	app *firebase.App
@@ -33,8 +34,14 @@ func (s *FCMService) tokenKey(userID string) string {
 	return fcmTokenKeyPrefix + userID
 }
 
-// RegisterToken — привязывает FCM-токен к пользователю (хранится в Redis, переживает рестарты)
-func (s *FCMService) RegisterToken(userID, token string) {
+func (s *FCMService) deviceKey(userID, deviceID string) string {
+	return fcmDeviceKeyPrefix + userID + ":" + deviceID
+}
+
+// RegisterToken — привязывает FCM-токен к пользователю и его устройству (хранится в Redis).
+// deviceID нужен, чтобы слать push только на доверенные устройства (login_request)
+// и удалять токен при отзыве доверенности.
+func (s *FCMService) RegisterToken(userID, token, deviceID string) {
 	ctx := context.Background()
 	ownerKey := fcmTokenOwnerPrefix + token
 
@@ -48,7 +55,10 @@ func (s *FCMService) RegisterToken(userID, token string) {
 		return
 	}
 	database.RDB.Set(ctx, ownerKey, userID, 0)
-	log.Printf("FCM: registered token for user %s", userID)
+	if deviceID != "" {
+		database.RDB.Set(ctx, s.deviceKey(userID, deviceID), token, 0)
+	}
+	log.Printf("FCM: registered token for user %s device %s", userID, deviceID)
 }
 
 // RemoveToken — отвязывает FCM-токен от пользователя
@@ -58,6 +68,45 @@ func (s *FCMService) RemoveToken(userID, token string) {
 		log.Printf("FCM: failed to remove token for user %s: %v", userID, err)
 	}
 	database.RDB.Del(ctx, fcmTokenOwnerPrefix+token)
+}
+
+// RemoveTokenForDevice — удаляет токен конкретного устройства (при отзыве доверенности).
+func (s *FCMService) RemoveTokenForDevice(userID, deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	ctx := context.Background()
+	key := s.deviceKey(userID, deviceID)
+	token, err := database.RDB.Get(ctx, key).Result()
+	if err == nil && token != "" {
+		database.RDB.SRem(ctx, s.tokenKey(userID), token)
+		database.RDB.Del(ctx, fcmTokenOwnerPrefix+token)
+		log.Printf("FCM: removed token for revoked device %s", deviceID)
+	}
+	database.RDB.Del(ctx, key)
+}
+
+// SendToDeviceIDs — отправляет push только на токены конкретных устройств (device_id).
+// Используется для login_request: push уходит только на доверенные устройства.
+func (s *FCMService) SendToDeviceIDs(userID string, deviceIDs []string, data map[string]string) (int, error) {
+	ctx := context.Background()
+	var tokens []string
+	seen := map[string]bool{}
+	for _, did := range deviceIDs {
+		if did == "" {
+			continue
+		}
+		t, err := database.RDB.Get(ctx, s.deviceKey(userID, did)).Result()
+		if err == nil && t != "" && !seen[t] {
+			seen[t] = true
+			tokens = append(tokens, t)
+		}
+	}
+	if len(tokens) == 0 {
+		log.Printf("FCM: no trusted device tokens for user %s — push skipped", userID)
+		return 0, nil
+	}
+	return s.sendMulticast(userID, tokens, data)
 }
 
 // ClearUserTokens — удаляет все FCM-токены пользователя
@@ -93,6 +142,10 @@ func (s *FCMService) SendToUser(userID string, data map[string]string, excludeTo
 		return 0, nil
 	}
 
+	return s.sendMulticast(userID, tokens, data)
+}
+
+func (s *FCMService) sendMulticast(userID string, tokens []string, data map[string]string) (int, error) {
 	log.Printf("FCM: sending push to %d device(s) for user %s", len(tokens), userID)
 	ctx := context.Background()
 	client, err := s.app.Messaging(ctx)

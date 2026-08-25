@@ -26,6 +26,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	callCheckSvc := service.NewCallCheckService(getEnvDefault("CALLCHECK_API_ID", "stub"))
 	s3Svc := service.NewS3Service(cfg.S3)
 	telegramSvc := service.NewTelegramService(cfg.Telegram)
+	emailSvc := service.NewEmailService(cfg.Email)
 
 	// FCM
 	var fcmSvc *service.FCMService
@@ -42,7 +43,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		}
 	}
 
-	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, telegramSvc, cfg.JWT, cfg.UploadDir)
+	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, telegramSvc, emailSvc, cfg.JWT, cfg.UploadDir)
 	propertyHandler := handler.NewPropertyHandler(s3Svc)
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)
@@ -110,6 +111,11 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/auth/telegram/link", authHandler.TelegramLink)
 		protected.GET("/auth/telegram/status", authHandler.TelegramStatus)
 		protected.POST("/auth/telegram/unlink", authHandler.TelegramUnlink)
+
+		// Email подтверждение
+		protected.POST("/auth/email/send_code", authHandler.EmailSendCode)
+		protected.POST("/auth/email/verify", authHandler.EmailVerify)
+		protected.GET("/auth/email/status", authHandler.EmailStatus)
 
 		// Users
 		protected.GET("/users/me", authHandler.GetMe)

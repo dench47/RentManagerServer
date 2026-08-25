@@ -17,6 +17,15 @@ type Config struct {
 	MaxUploadSize int64
 	APKBaseURL    string
 	Telegram      TelegramConfig
+	Email         EmailConfig
+}
+
+type EmailConfig struct {
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUser     string
+	SMTPPassword string
+	FromAddress  string
 }
 
 type TelegramConfig struct {
@@ -99,6 +108,13 @@ func Load() *Config {
 		Telegram: TelegramConfig{
 			BotToken:    getEnv("TELEGRAM_BOT_TOKEN", ""),
 			BotUsername: getEnv("TELEGRAM_BOT_USERNAME", ""),
+		},
+		Email: EmailConfig{
+			SMTPHost:     getEnv("SMTP_HOST", "localhost"),
+			SMTPPort:     getEnv("SMTP_PORT", "587"),
+			SMTPUser:     getEnv("SMTP_USER", ""),
+			SMTPPassword: getEnv("SMTP_PASSWORD", ""),
+			FromAddress:  getEnv("SMTP_FROM", "codes@менеджераренды.рф"),
 		},
 	}
 }
