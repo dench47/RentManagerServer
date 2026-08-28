@@ -94,17 +94,97 @@ func (h *PropertyHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "property not found"})
 		return
 	}
-	var input model.Property
-	if err := c.ShouldBindJSON(&input); err != nil {
+	// Частичное обновление: собираем map только из переданных в JSON полей —
+	// так очистка необязательных полей (null/пустые строки) корректно сохраняется
+	// (Updates со структурой игнорирует zero-значения).
+	var payload map[string]interface{}
+	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	database.DB.Model(&existing).Updates(input)
+	allowed := []string{
+		"name", "address", "area", "type", "rent_type", "rooms", "sleeping_places",
+		"floor", "floors_in_house", "description", "tenant_info", "service_info",
+		"phone", "wifi_password", "house_rules", "status", "rent_amount",
+		"rent_end_date", "contract_number", "contract_date", "tenant_id",
+		"latitude", "longitude", "is_published",
+	}
+	updates := map[string]interface{}{}
+	for _, key := range allowed {
+		if v, ok := payload[key]; ok {
+			updates[key] = v
+		}
+	}
+	if len(updates) > 0 {
+		if err := database.DB.Model(&existing).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	// Перечитываем, чтобы вернуть актуальное состояние объекта вместе с фото
+	if err := database.DB.Preload("Photos").First(&existing, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, existing)
+}
+
+// Publish — публикация объявления объекта.
+func (h *PropertyHandler) Publish(c *gin.Context) {
+	h.setPublished(c, true)
+}
+
+// Unpublish — снятие объявления объекта с публикации.
+func (h *PropertyHandler) Unpublish(c *gin.Context) {
+	h.setPublished(c, false)
+}
+
+func (h *PropertyHandler) setPublished(c *gin.Context, published bool) {
+	id := c.Param("id")
+	var property model.Property
+	if err := database.DB.Preload("Photos").First(&property, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "property not found"})
+		return
+	}
+	// Update по конкретной колонке: Updates со структурой не записал бы false (zero-value)
+	if err := database.DB.Model(&property).Update("is_published", published).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	property.IsPublished = published
+	c.JSON(http.StatusOK, property)
 }
 
 func (h *PropertyHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
+
+	var property model.Property
+	if err := database.DB.First(&property, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "property not found"})
+		return
+	}
+
+	// Каскадное удаление связанных данных объекта (см. текст диалога удаления
+	// в приложении): фото (+ файлы в S3), счётчики, история платежей, графики
+	// платежей и периоды занятости.
+	var photos []model.Photo
+	database.DB.Where("property_id = ?", id).Find(&photos)
+	if h.s3 != nil {
+		for _, ph := range photos {
+			key := h.s3.ExtractKey(ph.URL)
+			if key != "" {
+				if err := h.s3.Delete(context.Background(), key); err != nil {
+					log.Printf("WARNING: failed to delete photo from S3: %v", err)
+				}
+			}
+		}
+	}
+	database.DB.Where("property_id = ?", id).Delete(&model.Photo{})
+	database.DB.Where("property_id = ?", id).Delete(&model.Meter{})
+	database.DB.Where("property_id = ?", id).Delete(&model.Payment{})
+	database.DB.Where("property_id = ?", id).Delete(&model.PaymentSchedule{})
+	database.DB.Where("property_id = ?", id).Delete(&model.Booking{})
+
 	if err := database.DB.Delete(&model.Property{}, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

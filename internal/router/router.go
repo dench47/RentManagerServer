@@ -127,6 +127,8 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.GET("/properties/:id", propertyHandler.Get)
 		protected.PUT("/properties/:id", propertyHandler.Update)
 		protected.DELETE("/properties/:id", propertyHandler.Delete)
+		protected.POST("/properties/:id/publish", propertyHandler.Publish)
+		protected.POST("/properties/:id/unpublish", propertyHandler.Unpublish)
 		protected.POST("/properties/:id/photos", propertyHandler.AddPhoto)
 		protected.DELETE("/photos/:photoId", propertyHandler.DeletePhoto)
 

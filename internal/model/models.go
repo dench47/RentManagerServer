@@ -28,6 +28,8 @@ type Property struct {
 	Photos         []Photo  `gorm:"foreignKey:PropertyID" json:"photos,omitempty"`
 	Latitude       *float64 `json:"latitude"`
 	Longitude      *float64 `json:"longitude"`
+	// IsPublished — опубликовано ли объявление объекта для арендаторов
+	IsPublished bool `gorm:"default:false" json:"is_published"`
 }
 
 // Photo — фотография объекта
