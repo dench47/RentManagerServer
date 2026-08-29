@@ -107,13 +107,18 @@ type Chat struct {
 	ParticipantIDs string `gorm:"not null;type:jsonb" json:"participant_ids"`
 }
 
-// RefreshToken — токен для обновления access-токена
+// RefreshToken — токен для обновления access-токена.
+// RotatedAt/ReissuedAt (мс, 0 = не выставлено): ротация ПОМЕЧАЕТ токен
+// вместо удаления, чтобы отличить потерянный HTTP-ответ (повтор в
+// grace-окне) от кражи (поздний/повторный replay).
 type RefreshToken struct {
-	ID        string `gorm:"primaryKey;size:36" json:"id"`
-	UserID    string `gorm:"index;not null;size:36" json:"user_id"`
-	Token     string `gorm:"uniqueIndex;not null;size:255" json:"token"`
-	ExpiresAt int64  `gorm:"not null;index" json:"expires_at"`
-	CreatedAt int64  `gorm:"autoCreateTime:milli" json:"created_at"`
+	ID         string `gorm:"primaryKey;size:36" json:"id"`
+	UserID     string `gorm:"index;not null;size:36" json:"user_id"`
+	Token      string `gorm:"uniqueIndex;not null;size:255" json:"token"`
+	ExpiresAt  int64  `gorm:"not null;index" json:"expires_at"`
+	CreatedAt  int64  `gorm:"autoCreateTime:milli" json:"created_at"`
+	RotatedAt  int64  `gorm:"not null;default:0" json:"rotated_at"`  // мс; >0 = уже ротирован
+	ReissuedAt int64  `gorm:"not null;default:0" json:"reissued_at"` // мс; >0 = переигрыш в grace уже выдавался
 }
 
 // Message — сообщение в чате

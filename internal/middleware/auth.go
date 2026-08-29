@@ -43,8 +43,9 @@ func AuthMiddleware(cfg config.JWTConfig) gin.HandlerFunc {
 			return []byte(cfg.Secret), nil
 		})
 
-		if err != nil || !token.Valid {
-			log.Printf("JWT auth failed: err=%v valid=%v token=%s", err, token.Valid, tokenStr[:min(20, len(tokenStr))])
+		if err != nil || token == nil || !token.Valid {
+			valid := token != nil && token.Valid
+			log.Printf("JWT auth failed: err=%v valid=%v token=%s", err, valid, tokenStr[:min(20, len(tokenStr))])
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			c.Abort()
 			return

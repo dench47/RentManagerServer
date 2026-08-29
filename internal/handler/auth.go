@@ -311,7 +311,18 @@ func (h *AuthHandler) GetMe(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// RefreshToken — обновляет access-токен по refresh-токену (ротация)
+// refreshGraceWindow — сколько времени повтор уже ротированного refresh-токена
+// считается потерянным ответом сервера (сеть/заморозка фонового процесса),
+// а не кражей: в этом окне сервер ОДИН раз перевыдаёт пару токенов.
+const refreshGraceWindow = 30 * time.Minute
+
+// RefreshToken — обновляет access-токен по refresh-токену (ротация).
+//
+// Повтор уже ротированного токена:
+//   - один раз в пределах refreshGraceWindow → потерянный HTTP-ответ,
+//     перевыдаём пару (клиент не разлогинивается из-за сети);
+//   - позже окна или второй раз → похоже на кражу: отзыв ВСЕХ сессий юзера
+//     (все refresh-токены удаляются, token_version++ убивает access-токены).
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -319,14 +330,45 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
+	now := time.Now().UnixMilli()
+	graceMs := refreshGraceWindow.Milliseconds()
+
+	const (
+		branchRotate = iota // первая ротация
+		branchGrace         // повтор в grace-окне — потерянный ответ
+		branchRevoke        // поздний/повторный replay — ревок всех сессий
+	)
+	branch := branchRotate
+
 	var rt model.RefreshToken
 	err := database.DB.Transaction(func(tx *gormlib.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("token = ? AND expires_at > ?", req.RefreshToken, time.Now().UnixMilli()).
+			Where("token = ? AND expires_at > ?", req.RefreshToken, now).
 			First(&rt).Error; err != nil {
 			return err
 		}
-		return tx.Delete(&rt).Error
+		switch {
+		case rt.RotatedAt == 0:
+			// Первый обмен — ротация: помечаем токен вместо удаления.
+			branch = branchRotate
+			return tx.Model(&model.RefreshToken{}).Where("id = ?", rt.ID).
+				Update("rotated_at", now).Error
+		case rt.ReissuedAt == 0 && now-rt.RotatedAt <= graceMs:
+			// Повтор в grace-окне, переигрыш ещё не выдавался —
+			// потерянный ответ: перевыдаём пару (один раз).
+			branch = branchGrace
+			return tx.Model(&model.RefreshToken{}).Where("id = ?", rt.ID).
+				Update("reissued_at", now).Error
+		default:
+			// Поздний или повторный replay — подозрение на кражу:
+			// отзываем ВСЕ refresh-токены юзера и инвалидируем access-токены.
+			branch = branchRevoke
+			if err := tx.Where("user_id = ?", rt.UserID).Delete(&model.RefreshToken{}).Error; err != nil {
+				return err
+			}
+			return tx.Model(&model.User{}).Where("id = ?", rt.UserID).
+				Update("token_version", gormlib.Expr("token_version + 1")).Error
+		}
 	})
 	if err != nil {
 		if errors.Is(err, gormlib.ErrRecordNotFound) {
@@ -336,6 +378,22 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "refresh failed"})
 		}
 		return
+	}
+
+	if branch == branchRevoke {
+		log.Printf("SECURITY: refresh token reuse detected (user=%s, rotated %d ms ago, reissued_at=%d) — all sessions revoked",
+			rt.UserID, now-rt.RotatedAt, rt.ReissuedAt)
+		// Мгновенный логаут на остальных устройствах (как в LogoutAll).
+		if h.fcm != nil {
+			h.fcm.SendToUser(rt.UserID, map[string]string{
+				"type": "logout_all",
+			}, "")
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
+		return
+	}
+	if branch == branchGrace {
+		log.Printf("refresh: replay within grace window (user=%s) — re-issuing token pair", rt.UserID)
 	}
 
 	var user model.User
