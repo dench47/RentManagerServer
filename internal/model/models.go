@@ -65,6 +65,9 @@ type Meter struct {
 	Unit                 string  `gorm:"not null;size:20" json:"unit"` // м³, кВт·ч, Гкал
 	SubmitReadingsBy     string  `gorm:"size:30" json:"submit_readings_by"`
 	LastUpdated          *string `gorm:"size:30" json:"last_updated"`
+	// Напоминания из формы «Добавить счетчик» (тумблеры «Включить напоминание»)
+	RemindVerification bool `gorm:"default:false" json:"remind_verification"`
+	RemindReadings     bool `gorm:"default:false" json:"remind_readings"`
 }
 
 // Payment — платёж
