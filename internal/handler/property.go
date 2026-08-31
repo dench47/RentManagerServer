@@ -164,9 +164,8 @@ func (h *PropertyHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// Каскадное удаление связанных данных объекта (см. текст диалога удаления
-	// в приложении): фото (+ файлы в S3), счётчики, история платежей, графики
-	// платежей и периоды занятости.
+	// Полное удаление после подтверждения: файлы из S3 + ВСЕ связанные данные
+	// из БД физически (Unscoped — без soft-delete, строки не остаются).
 	var photos []model.Photo
 	database.DB.Where("property_id = ?", id).Find(&photos)
 	if h.s3 != nil {
@@ -179,16 +178,22 @@ func (h *PropertyHandler) Delete(c *gin.Context) {
 			}
 		}
 	}
-	database.DB.Where("property_id = ?", id).Delete(&model.Photo{})
-	database.DB.Where("property_id = ?", id).Delete(&model.Meter{})
-	database.DB.Where("property_id = ?", id).Delete(&model.Payment{})
-	database.DB.Where("property_id = ?", id).Delete(&model.PaymentSchedule{})
-	database.DB.Where("property_id = ?", id).Delete(&model.Booking{})
 
-	if err := database.DB.Delete(&model.Property{}, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	// Чаты объекта: сначала сообщения, потом сами чаты
+	var chatIDs []string
+	database.DB.Model(&model.Chat{}).Where("property_id = ?", id).Pluck("id", &chatIDs)
+	if len(chatIDs) > 0 {
+		database.DB.Unscoped().Where("chat_id IN ?", chatIDs).Delete(&model.Message{})
+		database.DB.Unscoped().Where("id IN ?", chatIDs).Delete(&model.Chat{})
 	}
+
+	database.DB.Unscoped().Where("property_id = ?", id).Delete(&model.Photo{})
+	database.DB.Unscoped().Where("property_id = ?", id).Delete(&model.Meter{})
+	database.DB.Unscoped().Where("property_id = ?", id).Delete(&model.Payment{})
+	database.DB.Unscoped().Where("property_id = ?", id).Delete(&model.PaymentSchedule{})
+	database.DB.Unscoped().Where("property_id = ?", id).Delete(&model.Booking{})
+	database.DB.Unscoped().Delete(&model.Property{}, "id = ?", id)
+
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
