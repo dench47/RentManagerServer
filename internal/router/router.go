@@ -150,6 +150,8 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/properties/:id/meters", meterHandler.Create)
 		protected.PUT("/meters/:meterId", meterHandler.Update)
 		protected.DELETE("/meters/:meterId", meterHandler.Delete)
+		protected.GET("/meters/:meterId/readings", meterHandler.ListReadings)
+		protected.POST("/meters/:meterId/readings", meterHandler.CreateReading)
 
 		// Tenants
 		protected.GET("/tenants", tenantHandler.List)

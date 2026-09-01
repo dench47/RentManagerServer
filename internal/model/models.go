@@ -70,6 +70,17 @@ type Meter struct {
 	RemindReadings     bool `gorm:"default:false" json:"remind_readings"`
 }
 
+// MeterReading — внесённое показание счётчика (история)
+type MeterReading struct {
+	BaseModel
+	MeterID    string  `gorm:"index;not null;size:36" json:"meter_id"`
+	PropertyID string  `gorm:"index;not null;size:36" json:"property_id"`
+	UserID     string  `gorm:"index;not null;size:36" json:"user_id"`
+	Value      float64 `gorm:"not null" json:"value"`
+	Unit       string  `gorm:"size:20" json:"unit"`
+	Date       string  `gorm:"size:30" json:"date"` // YYYY-MM-DD
+}
+
 // Payment — платёж
 type Payment struct {
 	BaseModel
