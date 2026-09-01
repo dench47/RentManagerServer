@@ -90,6 +90,7 @@ type PaymentSchedule struct {
 	Amount      *float64 `json:"amount"`
 	Type        string   `gorm:"size:20;default:auto" json:"type"` // auto / manual
 	CustomDates *string  `gorm:"type:jsonb" json:"custom_dates"`   // JSONB для ручного ввода
+	Requisites  *string  `gorm:"size:100" json:"requisites"`       // выбранные реквизиты
 }
 
 // Booking — период занятости объекта (заливка шахматки)

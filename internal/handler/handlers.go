@@ -356,6 +356,9 @@ func (h *PaymentHandler) ListSchedulesForTenant(c *gin.Context) {
 	c.JSON(http.StatusOK, schedules)
 }
 
+// CreateSchedule — создание графика платежей.
+// UPSERT по (user_id, property_id): график у объекта один, повторные
+// сохранения обновляют его, а не создают дубликаты.
 func (h *PaymentHandler) CreateSchedule(c *gin.Context) {
 	userID := c.GetString("userID")
 	var schedule model.PaymentSchedule
@@ -363,8 +366,28 @@ func (h *PaymentHandler) CreateSchedule(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	schedule.BaseModel.ID = uuid.New().String()
 	schedule.UserID = userID
+	var existing model.PaymentSchedule
+	err := database.DB.Where("user_id = ? AND property_id = ?", userID, schedule.PropertyID).
+		First(&existing).Error
+	if err == nil {
+		updates := map[string]interface{}{
+			"day_of_month": schedule.DayOfMonth,
+			"amount":       schedule.Amount,
+			"type":         schedule.Type,
+			"custom_dates": schedule.CustomDates,
+			"requisites":   schedule.Requisites,
+		}
+		if err := database.DB.Model(&existing).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		database.DB.Where("user_id = ? AND property_id = ?", userID, schedule.PropertyID).
+			First(&existing)
+		c.JSON(http.StatusOK, existing)
+		return
+	}
+	schedule.BaseModel.ID = uuid.New().String()
 	database.DB.Create(&schedule)
 	c.JSON(http.StatusCreated, schedule)
 }

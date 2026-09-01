@@ -84,6 +84,23 @@ func (h *PropertyHandler) Create(c *gin.Context) {
 	// Auto-set is_landlord when first property created
 	database.DB.Model(&model.User{}).Where("id = ?", userID).Update("is_landlord", true)
 
+	// График платежей создаётся сразу по типу аренды из шага 2 создания:
+	// посуточно → переменный (manual), длительно → постоянный (auto).
+	// Дата расчёта/сумма/реквизиты пользователь задаёт потом в самом графике.
+	scheduleType := "auto"
+	if property.RentType != nil && *property.RentType == "посуточно" {
+		scheduleType = "manual"
+	}
+	schedule := model.PaymentSchedule{
+		BaseModel:  model.BaseModel{ID: uuid.New().String()},
+		PropertyID: property.ID,
+		UserID:     userID,
+		Type:       scheduleType,
+	}
+	if err := database.DB.Create(&schedule).Error; err != nil {
+		log.Printf("WARNING: failed to create payment schedule: %v", err)
+	}
+
 	c.JSON(http.StatusCreated, property)
 }
 
