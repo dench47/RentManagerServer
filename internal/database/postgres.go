@@ -71,6 +71,9 @@ func InitPostgres(cfg config.DBConfig) {
 	// длительно → постоянный). Существующие графики не трогаются.
 	backfillPaymentSchedules()
 
+	// Нормализация юнита электроэнергии по макету: «кВт·ч» → «кВт»
+	normalizeMeterUnits()
+
 	// Фоновая очистка протухших refresh-токенов, чтобы таблица не росла.
 	go startRefreshTokenCleanup()
 
@@ -109,6 +112,23 @@ func consolidatePaymentSchedules() {
 	}
 	if removed > 0 {
 		log.Printf("payment schedule consolidation: removed %d duplicates", removed)
+	}
+}
+
+// normalizeMeterUnits приводит юнит электроэнергии к макетному «кВт»
+// (раньше писали «кВт·ч») — в счётчиках и истории показаний.
+func normalizeMeterUnits() {
+	res := DB.Exec("UPDATE meters SET unit = 'кВт' WHERE unit = 'кВт·ч'")
+	if res.Error != nil {
+		log.Printf("meter unit normalization failed: %v", res.Error)
+	} else if res.RowsAffected > 0 {
+		log.Printf("meter unit normalization: updated %d meters", res.RowsAffected)
+	}
+	res = DB.Exec("UPDATE meter_readings SET unit = 'кВт' WHERE unit = 'кВт·ч'")
+	if res.Error != nil {
+		log.Printf("meter reading unit normalization failed: %v", res.Error)
+	} else if res.RowsAffected > 0 {
+		log.Printf("meter unit normalization: updated %d readings", res.RowsAffected)
 	}
 }
 
