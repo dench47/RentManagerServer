@@ -44,6 +44,8 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      - FCM_CREDENTIALS_PATH=/app/firebase-service-account.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,6 +53,7 @@ services:
         condition: service_healthy
     volumes:
       - uploads_data:/app/uploads
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
 
 volumes:
   postgres_data:

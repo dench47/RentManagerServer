@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -14,9 +14,6 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=builder /app/server .
-COPY --from=builder /app/.env .
-COPY --from=builder /app/firebase-service-account.json .
-COPY --from=builder /app/uploads ./uploads
 
 EXPOSE 8080
 
