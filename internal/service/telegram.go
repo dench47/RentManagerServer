@@ -182,7 +182,7 @@ func (s *TelegramService) sendMessage(ctx context.Context, chatID int64, text st
 // ===== Генерация и отправка кода входа (on-demand, TTL 5 мин, лимит 5/сутки) =====
 
 const (
-	codeTTL        = 5 * time.Minute
+	codeTTL        = 10 * time.Minute
 	maxCodesPerDay = 5
 )
 
@@ -194,10 +194,15 @@ func (s *TelegramService) SendLoginCode(ctx context.Context, userID, phone strin
 		return 0, fmt.Errorf("telegram not linked")
 	}
 
-	dateKey := "tg_limit:" + userID + ":" + time.Now().Format("20060102")
+	now := time.Now()
+	dateKey := "tg_limit:" + userID + ":" + now.Format("20060102")
+	failedKey := "tg_failed:" + phone
+	_, failed := database.RDB.Get(ctx, failedKey).Result()
+
 	count, _ := database.RDB.Get(ctx, dateKey).Int64()
 
-	if count >= maxCodesPerDay {
+	// Счётчик попыток растёт только при повторном запросе кода после неудачного ввода.
+	if failed == nil && count >= maxCodesPerDay {
 		return 0, fmt.Errorf("daily limit reached")
 	}
 
@@ -205,10 +210,11 @@ func (s *TelegramService) SendLoginCode(ctx context.Context, userID, phone strin
 	codeKey := "tg_code:" + phone
 	database.RDB.Set(ctx, codeKey, code, codeTTL)
 
-	count++
-	now := time.Now()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(25 * time.Hour)
-	database.RDB.Set(ctx, dateKey, count, endOfDay.Sub(now))
+	if failed == nil {
+		count++
+		endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(25 * time.Hour)
+		database.RDB.Set(ctx, dateKey, count, endOfDay.Sub(now))
+	}
 
 	remaining := int(maxCodesPerDay - count)
 	msg := fmt.Sprintf("Код для входа: %s\nОсталось попыток сегодня: %d", code, remaining)
@@ -220,11 +226,16 @@ func (s *TelegramService) SendLoginCode(ctx context.Context, userID, phone strin
 // VerifyLoginCode проверяет код, возвращает userID при успехе.
 func (s *TelegramService) VerifyLoginCode(ctx context.Context, phone, code string) (string, error) {
 	codeKey := "tg_code:" + phone
+	failedKey := "tg_failed:" + phone
+
 	stored, err := database.RDB.Get(ctx, codeKey).Result()
 	if err != nil || stored == "" {
 		return "", fmt.Errorf("code expired or not found")
 	}
 	if stored != code {
+		now := time.Now()
+		endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(25 * time.Hour)
+		database.RDB.Set(ctx, failedKey, "1", endOfDay.Sub(now))
 		return "", fmt.Errorf("invalid code")
 	}
 	database.RDB.Del(ctx, codeKey)
@@ -233,6 +244,11 @@ func (s *TelegramService) VerifyLoginCode(ctx context.Context, phone, code strin
 	if err := database.DB.Where("phone = ?", phone).First(&user).Error; err != nil {
 		return "", fmt.Errorf("user not found")
 	}
+
+	database.RDB.Del(ctx, failedKey)
+	dateKey := "tg_limit:" + user.ID + ":" + time.Now().Format("20060102")
+	database.RDB.Del(ctx, dateKey)
+
 	return user.ID, nil
 }
 

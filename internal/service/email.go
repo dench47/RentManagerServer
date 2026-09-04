@@ -43,7 +43,7 @@ func (s *EmailService) GenerateCode() string {
 }
 
 const (
-	emailCodeTTL        = 5 * time.Minute
+	emailCodeTTL        = 10 * time.Minute
 	emailMaxCodesPerDay = 5
 )
 
@@ -106,9 +106,16 @@ func (s *EmailService) SendLoginCode(ctx context.Context, phone string) (int, er
 		return 0, fmt.Errorf("email not verified")
 	}
 
-	dateKey := "email_login_limit:" + user.ID + ":" + time.Now().Format("20060102")
+	now := time.Now()
+	dateKey := "email_login_limit:" + user.ID + ":" + now.Format("20060102")
+	failedKey := "email_login_failed:" + phone
+	_, failed := database.RDB.Get(ctx, failedKey).Result()
+
 	count, _ := database.RDB.Get(ctx, dateKey).Int64()
-	if count >= emailMaxCodesPerDay {
+
+	// Счётчик попыток растёт только при повторном запросе кода после неудачного
+	// ввода (код не тот). Первый запрос кода — бесплатный.
+	if failed == nil && count >= emailMaxCodesPerDay {
 		return 0, fmt.Errorf("daily limit reached")
 	}
 
@@ -116,10 +123,11 @@ func (s *EmailService) SendLoginCode(ctx context.Context, phone string) (int, er
 	codeKey := "email_login_code:" + phone
 	database.RDB.Set(ctx, codeKey, code, emailCodeTTL)
 
-	count++
-	now := time.Now()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(25 * time.Hour)
-	database.RDB.Set(ctx, dateKey, count, endOfDay.Sub(now))
+	if failed == nil {
+		count++
+		endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(25 * time.Hour)
+		database.RDB.Set(ctx, dateKey, count, endOfDay.Sub(now))
+	}
 
 	remaining := int(emailMaxCodesPerDay - count)
 
@@ -135,11 +143,18 @@ func (s *EmailService) SendLoginCode(ctx context.Context, phone string) (int, er
 // VerifyLoginCode проверяет код входа, возвращает userID при успехе.
 func (s *EmailService) VerifyLoginCode(ctx context.Context, phone, code string) (string, error) {
 	codeKey := "email_login_code:" + phone
+	failedKey := "email_login_failed:" + phone
+
 	stored, err := database.RDB.Get(ctx, codeKey).Result()
 	if err != nil || stored == "" {
 		return "", fmt.Errorf("code expired or not found")
 	}
 	if stored != code {
+		// Неверный код: помечаем попытку как неудачную, чтобы следующий запрос
+		// кода засчитался в дневной лимит.
+		now := time.Now()
+		endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(25 * time.Hour)
+		database.RDB.Set(ctx, failedKey, "1", endOfDay.Sub(now))
 		return "", fmt.Errorf("invalid code")
 	}
 	database.RDB.Del(ctx, codeKey)
@@ -148,18 +163,24 @@ func (s *EmailService) VerifyLoginCode(ctx context.Context, phone, code string) 
 	if err := database.DB.Where("phone = ?", phone).First(&user).Error; err != nil {
 		return "", fmt.Errorf("user not found")
 	}
+
+	// Успешный вход: сбрасываем флаг неудачи и дневной счётчик попыток.
+	database.RDB.Del(ctx, failedKey)
+	dateKey := "email_login_limit:" + user.ID + ":" + time.Now().Format("20060102")
+	database.RDB.Del(ctx, dateKey)
+
 	return user.ID, nil
 }
 
 func (s *EmailService) sendLoginEmail(to, code string) error {
 	subject := "Код входа RentManager"
-	body := fmt.Sprintf("Ваш код для входа: %s\n\nКод действителен 5 минут. Если вы не запрашивали вход, проигнорируйте письмо.", code)
+	body := fmt.Sprintf("Ваш код для входа: %s\n\nКод действителен 10 минут. Если вы не запрашивали вход, проигнорируйте письмо.", code)
 	return s.send(subject, to, body)
 }
 
 func (s *EmailService) sendEmail(to, code string) error {
 	subject := "Код подтверждения RentManager"
-	body := fmt.Sprintf("Ваш код для подтверждения почты: %s\n\nКод действителен 5 минут.", code)
+	body := fmt.Sprintf("Ваш код для подтверждения почты: %s\n\nКод действителен 10 минут.", code)
 	return s.send(subject, to, body)
 }
 
