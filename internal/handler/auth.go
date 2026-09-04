@@ -214,8 +214,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	canPush := trustedCount > 0 && h.fcm != nil
 	canTelegram := h.telegram != nil && h.telegram.IsEnabled() && h.telegram.HasBinding(user.ID)
-	log.Printf("LOGIN: phone=%s device=%s trusted=%v hasPassword=%v canPush=%v canTelegram=%v",
-		req.Phone, req.DeviceID, trusted, user.HasPassword, canPush, canTelegram)
+	canEmail := h.email != nil && h.email.IsEnabled() && user.Email != "" && user.EmailVerified
+	log.Printf("LOGIN: phone=%s device=%s trusted=%v hasPassword=%v canPush=%v canTelegram=%v canEmail=%v",
+		req.Phone, req.DeviceID, trusted, user.HasPassword, canPush, canTelegram, canEmail)
 
 	c.JSON(http.StatusOK, gin.H{
 		"exists":               true,
@@ -223,6 +224,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"is_trusted_device":    trusted,
 		"can_push":             canPush,
 		"can_telegram":         canTelegram,
+		"can_email":            canEmail,
 		"name":                 user.Name,
 		"phone":                user.Phone,
 		"default_start_screen": user.DefaultStartScreen,
@@ -438,6 +440,11 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	}
 	if req.Email != nil {
 		updates["email"] = *req.Email
+		// Смена почты сбрасывает подтверждение — новую почту нужно верифицировать заново
+		var current model.User
+		if err := database.DB.First(&current, "id = ?", userID).Error; err == nil && current.Email != *req.Email {
+			updates["email_verified"] = false
+		}
 	}
 	if req.LegalName != nil {
 		updates["legal_name"] = *req.LegalName

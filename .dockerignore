@@ -1,0 +1,18 @@
+# VCS
+.git
+.git_disabled
+
+# Secrets — never bake into build context
+.env
+.env.git_disabled/
+firebase-service-account.json
+deploy.sh
+
+# Binaries and runtime data
+server.exe
+server_linux
+uploads/
+
+# Misc
+release_notes.txt
+.idea

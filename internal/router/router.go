@@ -83,6 +83,10 @@ func Setup(cfg *config.Config) *gin.Engine {
 		// Вход через Telegram (код в мессенджер)
 		auth.POST("/login/telegram_code", authHandler.TelegramSendCode)
 		auth.POST("/login/telegram_verify", authHandler.TelegramVerifyCode)
+
+		// Вход через Email (код на подтверждённую почту)
+		auth.POST("/login/email_code", authHandler.EmailLoginSendCode)
+		auth.POST("/login/email_verify", authHandler.EmailLoginVerifyCode)
 	}
 
 	// Protected routes
