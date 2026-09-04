@@ -80,6 +80,21 @@ func (h *AuthHandler) EmailStatus(c *gin.Context) {
 	})
 }
 
+// EmailToggle2FA — включает/выключает способ входа через Email (protected).
+func (h *AuthHandler) EmailToggle2FA(c *gin.Context) {
+	userID := c.GetString("userID")
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enabled required"})
+		return
+	}
+
+	database.DB.Model(&model.User{}).Where("id = ?", userID).Update("email_2fa_enabled", req.Enabled)
+	c.JSON(http.StatusOK, gin.H{"enabled": req.Enabled})
+}
+
 // EmailLoginSendCode — отправляет код входа на подтверждённую почту (public, для недоверенного устройства).
 func (h *AuthHandler) EmailLoginSendCode(c *gin.Context) {
 	if h.email == nil || !h.email.IsEnabled() {

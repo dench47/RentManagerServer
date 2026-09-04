@@ -120,6 +120,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/auth/email/send_code", authHandler.EmailSendCode)
 		protected.POST("/auth/email/verify", authHandler.EmailVerify)
 		protected.GET("/auth/email/status", authHandler.EmailStatus)
+		protected.POST("/auth/email/toggle", authHandler.EmailToggle2FA)
 
 		// Users
 		protected.GET("/users/me", authHandler.GetMe)

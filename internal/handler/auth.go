@@ -214,7 +214,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	canPush := trustedCount > 0 && h.fcm != nil
 	canTelegram := h.telegram != nil && h.telegram.IsEnabled() && h.telegram.HasBinding(user.ID)
-	canEmail := h.email != nil && h.email.IsEnabled() && user.Email != "" && user.EmailVerified
+	canEmail := h.email != nil && h.email.IsEnabled() && user.Email != "" && user.EmailVerified && user.Email2FAEnabled
 	log.Printf("LOGIN: phone=%s device=%s trusted=%v hasPassword=%v canPush=%v canTelegram=%v canEmail=%v",
 		req.Phone, req.DeviceID, trusted, user.HasPassword, canPush, canTelegram, canEmail)
 
@@ -440,10 +440,11 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	}
 	if req.Email != nil {
 		updates["email"] = *req.Email
-		// Смена почты сбрасывает подтверждение — новую почту нужно верифицировать заново
+		// Смена почты сбрасывает подтверждение и 2FA — новую почту нужно верифицировать заново
 		var current model.User
 		if err := database.DB.First(&current, "id = ?", userID).Error; err == nil && current.Email != *req.Email {
 			updates["email_verified"] = false
+			updates["email_2fa_enabled"] = false
 		}
 	}
 	if req.LegalName != nil {
