@@ -655,6 +655,30 @@ func (h *AuthHandler) writeLoginRequest(c *gin.Context, p *loginRequestPayload, 
 	database.RDB.Set(c, "login_request:"+requestID, data, 5*time.Minute)
 }
 
+// cancelLoginRequestsForPhone — удаляет все pending login_request для телефона и
+// рассылает devices_changed, чтобы диалог «Подтвердите вход» на доверенных
+// устройствах закрылся мгновенно (пользователь ушёл в другой способ входа).
+func (h *AuthHandler) cancelLoginRequestsForPhone(c *gin.Context, phone string) {
+	keys, _ := database.RDB.Keys(c.Request.Context(), "login_request:*").Result()
+	userID := ""
+	for _, key := range keys {
+		raw, err := database.RDB.Get(c.Request.Context(), key).Result()
+		if err != nil {
+			continue
+		}
+		var p loginRequestPayload
+		if json.Unmarshal([]byte(raw), &p) == nil && p.Phone == phone {
+			if userID == "" {
+				userID = p.UserID
+			}
+			database.RDB.Del(c.Request.Context(), key)
+		}
+	}
+	if userID != "" && h.fcm != nil {
+		go h.fcm.SendToUser(userID, map[string]string{"type": "devices_changed"}, "")
+	}
+}
+
 // RequestLoginApproval — новое устройство запрашивает подтверждение входа.
 // На все доверенные устройства пользователя уходит push с request_id.
 func (h *AuthHandler) RequestLoginApproval(c *gin.Context) {

@@ -42,8 +42,10 @@ type DBConfig struct {
 }
 
 func (c DBConfig) DSN() string {
+	// connect_timeout=5: висящий (не отказывающий) порт БД не подвешивает
+	// процесс молча — соединение либо за 5 секунд, либо ошибка
 	return fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable connect_timeout=5",
 		c.Host, c.Port, c.User, c.Password, c.Name,
 	)
 }

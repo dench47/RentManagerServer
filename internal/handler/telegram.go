@@ -108,6 +108,9 @@ func (h *AuthHandler) TelegramSendCode(c *gin.Context) {
 		return
 	}
 
+	// Пользователь выбрал вход по Telegram — отменяем pending push-подтверждение
+	h.cancelLoginRequestsForPhone(c, req.Phone)
+
 	var user model.User
 	if err := database.DB.Where("phone = ?", req.Phone).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})

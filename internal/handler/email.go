@@ -109,6 +109,9 @@ func (h *AuthHandler) EmailLoginSendCode(c *gin.Context) {
 		return
 	}
 
+	// Пользователь выбрал вход по email — отменяем pending push-подтверждение
+	h.cancelLoginRequestsForPhone(c, req.Phone)
+
 	remaining, err := h.email.SendLoginCode(c.Request.Context(), req.Phone)
 	if err != nil {
 		log.Printf("EmailLoginSendCode: %v", err)

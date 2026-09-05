@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"log"
 	"os"
 	"rentmanager-server/internal/config"
@@ -29,11 +30,29 @@ func InitPostgres(cfg config.DBConfig) {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 
-	// Настройка пула соединений: переживает рестарт БД и не держит мёртвые коннекты.
+	// gorm подключается лениво — проверяем связь явно. База может подниматься
+	// дольше сервера (рестарт контейнера после ребута VPS): ждём с повторами,
+	// вместо того чтобы молча висеть на первом же запросе. Не дождались —
+	// падаем, systemd перезапустит юнит (Restart=always).
 	sqlDB, err := DB.DB()
 	if err != nil {
 		log.Fatalf("Failed to get sql.DB: %v", err)
 	}
+	for attempt := 1; attempt <= 30; attempt++ {
+		pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = sqlDB.PingContext(pingCtx)
+		cancel()
+		if err == nil {
+			break
+		}
+		if attempt == 30 {
+			log.Fatalf("PostgreSQL недоступен после %d попыток: %v", attempt, err)
+		}
+		log.Printf("ожидание postgres, попытка %d/30: %v", attempt, err)
+		time.Sleep(5 * time.Second)
+	}
+
+	// Настройка пула соединений: переживает рестарт БД и не держит мёртвые коннекты.
 	sqlDB.SetMaxOpenConns(25)
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
