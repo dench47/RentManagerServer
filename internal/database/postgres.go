@@ -70,6 +70,7 @@ func InitPostgres(cfg config.DBConfig) {
 		&model.MeterReading{},
 		&model.Payment{},
 		&model.PaymentSchedule{},
+		&model.PaymentRequisite{},
 		&model.Booking{},
 		&model.Chat{},
 		&model.Message{},

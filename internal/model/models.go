@@ -101,7 +101,17 @@ type PaymentSchedule struct {
 	Amount      *float64 `json:"amount"`
 	Type        string   `gorm:"size:20;default:auto" json:"type"` // auto / manual
 	CustomDates *string  `gorm:"type:jsonb" json:"custom_dates"`   // JSONB для ручного ввода
-	Requisites  *string  `gorm:"size:100" json:"requisites"`       // выбранные реквизиты
+	Requisites  *string  `gorm:"size:36" json:"requisites"`        // ID выбранных реквизитов (PaymentRequisite)
+}
+
+// PaymentRequisite — реквизиты арендодателя для приёма платежей
+// (общие на аккаунт, не привязаны к объекту)
+type PaymentRequisite struct {
+	BaseModel
+	UserID  string `gorm:"index;not null;size:36" json:"user_id"`
+	Name    string `gorm:"not null;size:200" json:"name"` // «ИП Петров В.А.» / «ООО «Легенда»»
+	Account string `gorm:"size:50" json:"account"`        // расчётный счёт
+	Bank    string `gorm:"size:100" json:"bank"`          // «Точка»
 }
 
 // Booking — период занятости объекта (заливка шахматки)

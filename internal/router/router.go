@@ -48,6 +48,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)
 	paymentHandler := handler.NewPaymentHandler()
+	requisiteHandler := handler.NewRequisiteHandler()
 	userHandler := handler.NewUserHandler()
 	bookingHandler := handler.NewBookingHandler()
 	financeHandler := handler.NewFinanceHandler()
@@ -168,6 +169,12 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.GET("/payments/schedule", paymentHandler.ListSchedules)
 		protected.POST("/payments/schedule", paymentHandler.CreateSchedule)
 		protected.GET("/tenant/schedules", paymentHandler.ListSchedulesForTenant)
+
+		// Payment requisites (реквизиты арендодателя)
+		protected.GET("/payments/requisites", requisiteHandler.List)
+		protected.POST("/payments/requisites", requisiteHandler.Create)
+		protected.PUT("/payments/requisites/:requisiteId", requisiteHandler.Update)
+		protected.DELETE("/payments/requisites/:requisiteId", requisiteHandler.Delete)
 
 		// Payments (имитация оплаты)
 		protected.GET("/properties/:id/payments", paymentHandler.ListPayments)
