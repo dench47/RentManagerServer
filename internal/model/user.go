@@ -18,6 +18,29 @@ type User struct {
 	HasPassword        bool   `gorm:"-" json:"has_password"`
 	FullName           string `gorm:"default:'';size:300" json:"full_name"`
 	DefaultStartScreen string `gorm:"default:'';size:20" json:"default_start_screen"`
+	// Подписка: баланс (пополнения списываются на тариф) и применённый промокод
+	Balance          float64 `gorm:"default:0" json:"balance"`
+	AppliedPromoCode string  `gorm:"default:'';size:50" json:"applied_promo_code"`
+}
+
+// PromoCode — промокод подписки: льготный тариф вместо базового 10 ₽/день
+type PromoCode struct {
+	BaseModel
+	Code string  `gorm:"uniqueIndex;not null;size:50" json:"code"`
+	Rate float64 `json:"rate"` // ₽ / объект / день
+	Note string  `gorm:"size:200" json:"note"`
+}
+
+// SubscriptionOperation — операция по балансу подписки: пополнение,
+// ежедневное списание за тариф, бонус промокода
+type SubscriptionOperation struct {
+	BaseModel
+	UserID   string  `gorm:"index;not null;size:36" json:"user_id"`
+	Type     string  `gorm:"size:20;not null" json:"type"`       // topup / charge / bonus
+	Title    string  `gorm:"size:100" json:"title"`              // «Пополнение баланса»
+	Subtitle string  `gorm:"size:200" json:"subtitle"`           // «Банковская карта •• 2545»
+	Amount   float64 `gorm:"not null" json:"amount"`             // +30 / −30
+	Status   string  `gorm:"size:20;default:done" json:"status"` // done / credited / failed
 }
 
 // AfterFind заполняет HasPassword после чтения из БД, не отдавая сам хэш клиенту.

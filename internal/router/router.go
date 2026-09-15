@@ -48,6 +48,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)
 	paymentHandler := handler.NewPaymentHandler()
+	subscriptionHandler := handler.NewSubscriptionHandler()
 	requisiteHandler := handler.NewRequisiteHandler()
 	userHandler := handler.NewUserHandler()
 	bookingHandler := handler.NewBookingHandler()
@@ -166,6 +167,12 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.DELETE("/tenants/:id", tenantHandler.Delete)
 
 		// Payment schedules
+		// Подписка: состояние баланса, демо-пополнение, промокоды
+		protected.GET("/subscription", subscriptionHandler.State)
+		protected.POST("/subscription/topup", subscriptionHandler.TopUp)
+		protected.POST("/subscription/promo", subscriptionHandler.ApplyPromo)
+		protected.GET("/subscription/operations", subscriptionHandler.Operations)
+
 		protected.GET("/payments/schedule", paymentHandler.ListSchedules)
 		protected.POST("/payments/schedule", paymentHandler.CreateSchedule)
 		protected.GET("/tenant/schedules", paymentHandler.ListSchedulesForTenant)
