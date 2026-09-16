@@ -64,7 +64,9 @@ func (s *SubscriptionChargeService) Start() {
 // (следующий календарный день); в тестовом режиме — +интервал.
 func (s *SubscriptionChargeService) nextMidnight(from time.Time) time.Time {
 	if s.testInterval > 0 {
-		return from.Add(s.testInterval)
+		// Обрезаем миллисекунды: тикер приходит в ту же секунду чуть раньше
+		// (напр. 01:02:08.827 против next 01:02:08.847) и пропускает тик
+		return from.Add(s.testInterval).Truncate(time.Second)
 	}
 	next := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
 	if !next.After(from) {
@@ -114,6 +116,7 @@ func (s *SubscriptionChargeService) Step(user *model.User) {
 		if user.SubscriptionBlocked {
 			s.unblock(user.ID)
 		}
+		s.notifyChanged(user.ID)
 
 	case charge > 0 && user.Balance < 0:
 		// Кредит в один транш исчерпан — функционал останавливается.
@@ -123,11 +126,12 @@ func (s *SubscriptionChargeService) Step(user *model.User) {
 				UserID:   user.ID,
 				Type:     "charge",
 				Title:    "Ежедневное списание",
-				Subtitle: "Недостаточно средств",
+				Subtitle: strconv.FormatInt(objects, 10) + " объекта × " + formatRub(rate) + " ₽",
 				Amount:   -charge,
 				Status:   "failed",
 			})
 			s.block(user.ID)
+			s.notifyChanged(user.ID)
 			log.Printf("charge: user %s BLOCKED (balance %.0f, charge %.0f)", user.ID, user.Balance, charge)
 		}
 
@@ -176,6 +180,14 @@ func (s *SubscriptionChargeService) ResumeIfBlocked(userID string) {
 	s.Step(&user)
 }
 
+// notifyChanged — тихий сигнал открытому экрану: перечитай баланс/историю.
+// Единственный «поллинг наоборот»: сервер сам сообщает об изменении.
+func (s *SubscriptionChargeService) notifyChanged(userID string) {
+	if s.fcm != nil {
+		go s.fcm.SendToUser(userID, map[string]string{"type": "subscription_changed"}, "")
+	}
+}
+
 // block — функционал недоступен: объекты с публикации, флаг, пуш
 func (s *SubscriptionChargeService) block(userID string) {
 	database.DB.Model(&model.User{}).Where("id = ?", userID).
@@ -192,7 +204,7 @@ func (s *SubscriptionChargeService) block(userID string) {
 	}
 }
 
-// unblock — публикация возвращается, флаг снимается
+// unblock — публикация возвращается, флаг снимается; событие шлёт вызов block/Step
 func (s *SubscriptionChargeService) unblock(userID string) {
 	database.DB.Model(&model.User{}).Where("id = ?", userID).
 		Update("subscription_blocked", false)
