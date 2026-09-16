@@ -14,11 +14,12 @@ import (
 )
 
 type PropertyHandler struct {
-	s3 *service.S3Service
+	s3      *service.S3Service
+	Charges *service.SubscriptionChargeService
 }
 
-func NewPropertyHandler(s3 *service.S3Service) *PropertyHandler {
-	return &PropertyHandler{s3: s3}
+func NewPropertyHandler(s3 *service.S3Service, charges *service.SubscriptionChargeService) *PropertyHandler {
+	return &PropertyHandler{s3: s3, Charges: charges}
 }
 
 func (h *PropertyHandler) List(c *gin.Context) {
@@ -83,6 +84,11 @@ func (h *PropertyHandler) Create(c *gin.Context) {
 
 	// Auto-set is_landlord when first property created
 	database.DB.Model(&model.User{}).Where("id = ?", userID).Update("is_landlord", true)
+
+	// Первый объект при уже пополненном балансе — запуск колеса списаний
+	if h.Charges != nil {
+		go h.Charges.ActivateIfDue(userID)
+	}
 
 	// График платежей создаётся сразу по типу аренды из шага 2 создания:
 	// посуточно → переменный (manual), длительно → постоянный (auto).

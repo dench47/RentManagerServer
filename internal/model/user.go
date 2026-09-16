@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 import "gorm.io/gorm"
 
 type User struct {
@@ -21,6 +23,11 @@ type User struct {
 	// Подписка: баланс (пополнения списываются на тариф) и применённый промокод
 	Balance          float64 `gorm:"default:0" json:"balance"`
 	AppliedPromoCode string  `gorm:"default:'';size:50" json:"applied_promo_code"`
+	// Следующее списание подписки (скользящие сутки); null = колесо не крутится
+	NextChargeAt *time.Time `gorm:"index" json:"next_charge_at"`
+	// Функционал остановлен: долг превысил один транш, объекты сняты
+	// с публикации до пополнения
+	SubscriptionBlocked bool `gorm:"default:false" json:"subscription_blocked"`
 }
 
 // PromoCode — промокод подписки: льготный тариф вместо базового 10 ₽/день

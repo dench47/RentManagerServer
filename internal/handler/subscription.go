@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+
+	"rentmanager-server/internal/service"
 	"strings"
 
 	"rentmanager-server/internal/database"
@@ -14,9 +16,16 @@ import (
 // SubscriptionHandler — баланс и промокоды подписки.
 // Пополнение пока демо (+30 ₽ по нажатию); реальная оплата через ЮKassa
 // подключается позже на место TopUp.
-type SubscriptionHandler struct{}
+type SubscriptionHandler struct {
+	Charges *service.SubscriptionChargeService
+}
 
-func NewSubscriptionHandler() *SubscriptionHandler {
+func NewSubscriptionHandler(charges *service.SubscriptionChargeService) *SubscriptionHandler {
+	return &SubscriptionHandler{Charges: charges}
+}
+
+// SeedDemoPromo — демо-промокод «ОСЕНЬ», если таблица пуста
+func SeedDemoPromo() {
 	// Демо-промокод из макетов (скидочный тариф 8 ₽ / объект / день);
 	// список промокодов пополняется прямо в базе
 	var count int64
@@ -24,7 +33,6 @@ func NewSubscriptionHandler() *SubscriptionHandler {
 	if count == 0 {
 		database.DB.Create(&model.PromoCode{Code: "ОСЕНЬ", Rate: 8.0, Note: "Демо-промокод из макета"})
 	}
-	return &SubscriptionHandler{}
 }
 
 // State — GET /subscription: баланс, объекты, тариф и применённый промокод
@@ -56,6 +64,7 @@ func (h *SubscriptionHandler) State(c *gin.Context) {
 		"rate":         rate,
 		"daily_charge": float64(objects) * rate,
 		"promo":        promo,
+		"blocked":      user.SubscriptionBlocked,
 	})
 }
 
@@ -82,6 +91,10 @@ func (h *SubscriptionHandler) TopUp(c *gin.Context) {
 		Amount:   amount,
 		Status:   "credited",
 	})
+	// Появились деньги при существующих объектах — запуск колеса списаний
+	if h.Charges != nil {
+		go h.Charges.ActivateIfDue(userID)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"added":   amount,
 		"balance": user.Balance + amount,

@@ -44,11 +44,14 @@ func Setup(cfg *config.Config) *gin.Engine {
 	}
 
 	authHandler := handler.NewAuthHandler(nil, callCheckSvc, s3Svc, fcmSvc, telegramSvc, emailSvc, cfg.JWT, cfg.UploadDir)
-	propertyHandler := handler.NewPropertyHandler(s3Svc)
+	chargeService := service.NewSubscriptionChargeService(fcmSvc)
+	chargeService.Start()
+	handler.SeedDemoPromo()
+	propertyHandler := handler.NewPropertyHandler(s3Svc, chargeService)
 	meterHandler := handler.NewMeterHandler()
 	tenantHandler := handler.NewTenantHandler(fcmSvc)
 	paymentHandler := handler.NewPaymentHandler()
-	subscriptionHandler := handler.NewSubscriptionHandler()
+	subscriptionHandler := handler.NewSubscriptionHandler(chargeService)
 	requisiteHandler := handler.NewRequisiteHandler()
 	userHandler := handler.NewUserHandler()
 	bookingHandler := handler.NewBookingHandler()
