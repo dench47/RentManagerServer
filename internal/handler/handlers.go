@@ -87,8 +87,9 @@ func BindUserTenantRecords(user model.User) {
 	}
 }
 
-// attachTenantAvatars — аватарка арендатора живьём с его аккаунта (по user_id):
-// юзер сменил аву — обновилась везде; записи без связки остаются без авы
+// attachTenantAvatars — данные арендатора живьём с его аккаунта (по user_id):
+// аватарка, почта и название компании (= «название юридического лица» из
+// настроек юзера). Юзер сменил данные — карточка у владельца обновится.
 func attachTenantAvatars(tenants *[]model.Tenant) {
 	ids := make([]string, 0, len(*tenants))
 	for i := range *tenants {
@@ -100,18 +101,30 @@ func attachTenantAvatars(tenants *[]model.Tenant) {
 		return
 	}
 	var users []model.User
-	database.DB.Select("id", "avatar_url").Where("id IN ?", ids).Find(&users)
-	byID := make(map[string]string, len(users))
+	database.DB.Select("id", "avatar_url", "email", "legal_name").Where("id IN ?", ids).Find(&users)
+	byID := make(map[string]model.User, len(users))
 	for _, u := range users {
-		if u.AvatarURL != "" {
-			byID[u.ID] = u.AvatarURL
-		}
+		byID[u.ID] = u
 	}
 	for i := range *tenants {
-		if (*tenants)[i].UserID != nil {
-			if av, ok := byID[*(*tenants)[i].UserID]; ok {
-				(*tenants)[i].AvatarURL = &av
-			}
+		if (*tenants)[i].UserID == nil {
+			continue
+		}
+		u, ok := byID[*(*tenants)[i].UserID]
+		if !ok {
+			continue
+		}
+		if u.AvatarURL != "" {
+			av := u.AvatarURL
+			(*tenants)[i].AvatarURL = &av
+		}
+		if u.Email != "" {
+			e := u.Email
+			(*tenants)[i].Email = &e
+		}
+		if u.LegalName != "" {
+			ln := u.LegalName
+			(*tenants)[i].CompanyName = &ln
 		}
 	}
 }
@@ -178,35 +191,16 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// Снимаем арендатора со всех объектов, к которым он был привязан.
-	// Чистим ВСЁ: tenant_id + снимок tenant_info/phone, иначе карточка
-	// объекта продолжает показывать удалённого арендатора
-	var properties []model.Property
-	database.DB.Where("tenant_id = ?", id).Find(&properties)
-	for _, p := range properties {
-		database.DB.Model(&model.Property{}).Where("id = ?", p.ID).
-			Updates(map[string]interface{}{
-				"tenant_id":   nil,
-				"tenant_info": nil,
-				"phone":       nil,
-				"status":      "free",
-			})
+	// Диалог «Нельзя удалить карточку» (Figma 3005:53081): при активной
+	// аренде удаление запрещено — сначала завершите аренду
+	var occupied []model.Property
+	database.DB.Where("tenant_id = ?", id).Find(&occupied)
+	if len(occupied) > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "has_active_rent"})
+		return
 	}
 
-	// Уведомляем пользователя, если арендатор привязан к аккаунту приложения
-	if tenant.UserID != nil && h.fcm != nil {
-		body := "Арендодатель удалил вас из объекта"
-		if len(properties) == 1 {
-			body = "Арендодатель удалил вас из объекта «" + properties[0].Name + "»"
-		}
-		go h.fcm.SendToUser(*tenant.UserID, map[string]string{
-			"type":  "tenant_detached",
-			"title": "Доступ к объекту отозван",
-			"body":  body,
-		}, "")
-	}
-
-	// Сбрасываем is_tenant, если у пользователя не осталось активных записей арендатора
+	// Сбрасываем is_tenant, если у пользователя не осталось записей арендатора
 	if tenant.UserID != nil {
 		var count int64
 		database.DB.Model(&model.Tenant{}).
@@ -215,10 +209,91 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 		if count == 0 {
 			database.DB.Model(&model.User{}).Where("id = ?", *tenant.UserID).Update("is_tenant", false)
 		}
+		if h.fcm != nil {
+			go h.fcm.SendToUser(*tenant.UserID, map[string]string{
+				"type":  "tenant_detached",
+				"title": "Доступ к объекту отозван",
+				"body":  "Арендодатель удалил вашу карточку арендатора",
+			}, "")
+		}
 	}
 
 	database.DB.Delete(&model.Tenant{}, "id = ?", id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// Update — редактирование карточки арендатора владельцем (канвас «14»,
+// «Редактирование арендатора»). Смена телефона перепривязывает аккаунт:
+// новый номер совпал с юзером → бинд, нет → отвязка.
+func (h *TenantHandler) Update(c *gin.Context) {
+	id := c.Param("id")
+	userID := c.GetString("userID")
+	var input model.Tenant
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	updates := map[string]interface{}{}
+	if input.FullName != "" {
+		updates["full_name"] = input.FullName
+	}
+	if input.CompanyName != nil {
+		updates["company_name"] = *input.CompanyName
+	}
+	if input.Email != nil {
+		updates["email"] = *input.Email
+	}
+	if input.Phone != "" {
+		updates["phone"] = input.Phone
+		if uid := findUserByPhone(input.Phone); uid != "" {
+			updates["user_id"] = uid
+			database.DB.Model(&model.User{}).Where("id = ?", uid).Update("is_tenant", true)
+		} else {
+			updates["user_id"] = nil
+		}
+	}
+	if input.PassportData != nil {
+		updates["passport_data"] = *input.PassportData
+	}
+	if input.ServiceInfo != nil {
+		updates["service_info"] = *input.ServiceInfo
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update"})
+		return
+	}
+	res := database.DB.Model(&model.Tenant{}).
+		Where("id = ? AND owner_id = ?", id, userID).Updates(updates)
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	var tenant model.Tenant
+	database.DB.First(&tenant, "id = ?", id)
+	one := []model.Tenant{tenant}
+	attachTenantAvatars(&one)
+	c.JSON(http.StatusOK, one[0])
+}
+
+// Restore — «Отменить удаление» (Figma 3014:22433): вернуть мягко удалённую
+// карточку; связей с объектами у удалённого и не было (удаление при активной
+// аренде запрещено), поэтому восстанавливаем запись и флаг is_tenant
+func (h *TenantHandler) Restore(c *gin.Context) {
+	id := c.Param("id")
+	if err := database.DB.Unscoped().Model(&model.Tenant{}).Where("id = ?", id).
+		Update("deleted_at", nil).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	var tenant model.Tenant
+	if err := database.DB.First(&tenant, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	if tenant.UserID != nil {
+		database.DB.Model(&model.User{}).Where("id = ?", *tenant.UserID).Update("is_tenant", true)
+	}
+	c.JSON(http.StatusOK, tenant)
 }
 
 // TenantBookingView — бронь арендатора с данными объекта (для карточки арендатора)
@@ -362,6 +437,73 @@ func (h *TenantHandler) AttachToProperty(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "tenant attached", "tenant_id": tenantID})
+}
+
+// DetachFromProperty — открепить арендатора от объекта (Figma 2936:41556).
+// Делает две вещи сразу:
+//  1. освобождает объект: tenant_id/tenant_info/phone/rent_end_date → nil,
+//     status = "free";
+//  2. освобождает шахматку с первого числа текущего месяца: бронь, начавшаяся
+//     в прошлом, обрезается концом предыдущего месяца (история аренды
+//     остаётся), брони текущего месяца и будущие снимаются.
+//
+// Без п.2 карточка объекта уже показывает «Арендатор не добавлен · готова
+// к аренде», а шахматка остаётся зелёной — расхождение, которое чинится здесь.
+func (h *TenantHandler) DetachFromProperty(c *gin.Context) {
+	propertyID := c.Param("id")
+	var property model.Property
+	if err := database.DB.First(&property, "id = ?", propertyID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "property not found"})
+		return
+	}
+
+	// Арендатор нужен до очистки связи — для push-уведомления
+	var tenant model.Tenant
+	if property.TenantID != nil {
+		database.DB.First(&tenant, "id = ?", *property.TenantID)
+	}
+
+	database.DB.Model(&model.Property{}).Where("id = ?", propertyID).
+		Updates(map[string]interface{}{
+			"tenant_id":     nil,
+			"tenant_info":   nil,
+			"phone":         nil,
+			"rent_end_date": nil,
+			"status":        "free",
+		})
+
+	// Шахматка свободна с первого числа текущего месяца.
+	// Даты броней — строки YYYY-MM-DD, лексикографическое сравнение корректно.
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).
+		Format("2006-01-02")
+	prevMonthEnd := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).
+		AddDate(0, 0, -1).Format("2006-01-02")
+	var bookings []model.Booking
+	database.DB.Where("property_id = ? AND end_date >= ?", propertyID, monthStart).Find(&bookings)
+	for _, b := range bookings {
+		if b.StartDate < monthStart {
+			database.DB.Model(&model.Booking{}).Where("id = ?", b.ID).
+				Update("end_date", prevMonthEnd)
+		} else {
+			database.DB.Delete(&model.Booking{}, "id = ?", b.ID)
+		}
+	}
+
+	// Push арендатору: доступ к объекту отозван (обещание шита открепления)
+	if tenant.ID != "" && tenant.UserID != nil && h.fcm != nil {
+		name := property.Name
+		if name == "" {
+			name = "объект"
+		}
+		go h.fcm.SendToUser(*tenant.UserID, map[string]string{
+			"type":  "tenant_detached",
+			"title": "Доступ к объекту отозван",
+			"body":  "Арендодатель открепил вас от объекта «" + name + "»",
+		}, "")
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "tenant detached"})
 }
 
 // ---------------- User search ----------------

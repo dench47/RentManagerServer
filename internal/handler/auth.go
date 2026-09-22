@@ -475,6 +475,24 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	}
 	var user model.User
 	database.DB.First(&user, "id = ?", userID)
+
+	// Данные, которые видны владельцам в карточке арендатора, изменились —
+	// молча пушим им tenant_profile_changed: экраны обновляются мгновенно
+	if req.Email != nil || req.LegalName != nil || req.AvatarURL != nil || req.Name != "" {
+		if h.fcm != nil {
+			var ownerIDs []string
+			database.DB.Model(&model.Tenant{}).
+				Where("user_id = ? AND owner_id <> ?", userID, userID).
+				Distinct().Pluck("owner_id", &ownerIDs)
+			for _, owner := range ownerIDs {
+				go h.fcm.SendToUser(owner, map[string]string{
+					"type":  "tenant_profile_changed",
+					"title": "Данные арендатора обновлены",
+					"body":  "",
+				}, "")
+			}
+		}
+	}
 	c.JSON(http.StatusOK, user)
 }
 

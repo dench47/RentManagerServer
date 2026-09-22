@@ -142,8 +142,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.POST("/properties/:id/photos", propertyHandler.AddPhoto)
 		protected.DELETE("/photos/:photoId", propertyHandler.DeletePhoto)
 
-		// Attach tenant
+		// Attach / detach tenant
 		protected.POST("/properties/:id/attach_tenant", tenantHandler.AttachToProperty)
+		protected.POST("/properties/:id/detach_tenant", tenantHandler.DetachFromProperty)
 
 		// Bookings (занятость объекта — заливка шахматки)
 		protected.GET("/properties/:id/bookings", bookingHandler.List)
@@ -168,6 +169,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.GET("/tenants/:id", tenantHandler.Get)
 		// Карточка арендатора одним запросом (арендатор + брони с объектами)
 		protected.GET("/tenants/:id/card", tenantHandler.Card)
+		// «Отменить удаление» (Figma 3014:22433)
+		protected.POST("/tenants/:id/restore", tenantHandler.Restore)
+		protected.PUT("/tenants/:id", tenantHandler.Update)
 		protected.POST("/tenants", tenantHandler.Create)
 		protected.DELETE("/tenants/:id", tenantHandler.Delete)
 
