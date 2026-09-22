@@ -29,7 +29,50 @@ func (h *PropertyHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	resolveTenantDisplay(properties)
 	c.JSON(http.StatusOK, properties)
+}
+
+// resolveTenantDisplay — карточка объекта показывает арендатора по ЖИВОЙ связи,
+// а не по снимку tenant_info в строке объекта: при наличии tenant_id имя/телефон
+// берём из записи арендатора; висячая ссылка (арендатор удалён в обход хендлера)
+// самолечится — объект освобождается.
+func resolveTenantDisplay(properties []model.Property) {
+	ids := make([]string, 0, len(properties))
+	for i := range properties {
+		if properties[i].TenantID != nil && *properties[i].TenantID != "" {
+			ids = append(ids, *properties[i].TenantID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var tenants []model.Tenant
+	database.DB.Where("id IN ?", ids).Find(&tenants) // soft-delete учитывается: удалённые не находятся
+	byID := make(map[string]model.Tenant, len(tenants))
+	for _, t := range tenants {
+		byID[t.ID] = t
+	}
+	for i := range properties {
+		if properties[i].TenantID == nil {
+			continue
+		}
+		t, ok := byID[*properties[i].TenantID]
+		if !ok {
+			// Висячая ссылка — чиним и объект, и ответ
+			database.DB.Model(&model.Property{}).Where("id = ?", properties[i].ID).
+				Updates(map[string]interface{}{"tenant_id": nil, "tenant_info": nil, "phone": nil, "status": "free"})
+			properties[i].TenantID = nil
+			properties[i].TenantInfo = nil
+			properties[i].Phone = nil
+			properties[i].Status = "free"
+			continue
+		}
+		name := t.FullName
+		phone := t.Phone
+		properties[i].TenantInfo = &name
+		properties[i].Phone = &phone
+	}
 }
 
 // ListForTenant — объекты, где текущий пользователь является арендатором
@@ -52,7 +95,9 @@ func (h *PropertyHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "property not found"})
 		return
 	}
-	c.JSON(http.StatusOK, property)
+	props := []model.Property{property}
+	resolveTenantDisplay(props)
+	c.JSON(http.StatusOK, props[0])
 }
 
 func (h *PropertyHandler) Create(c *gin.Context) {

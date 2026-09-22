@@ -285,6 +285,9 @@ func (h *AuthHandler) CallCheckStatus(c *gin.Context) {
 		}
 		database.DB.Create(&user)
 		isNewUser = true
+		// Регистрация — единственный момент, когда появляются «ранее несовпадавшие»
+		// телефоны: привязываем карточки арендатора, созданные до регистрации
+		BindUserTenantRecords(user)
 	}
 	tokenStr, _ := h.generateAccessToken(user)
 	refreshToken, _ := h.createRefreshToken(user.ID)
@@ -516,6 +519,8 @@ func (h *AuthHandler) ConfirmPhoneChange(c *gin.Context) {
 	database.DB.Model(&model.User{}).Where("id = ?", userID).Update("phone", req.Phone)
 	var user model.User
 	database.DB.First(&user, "id = ?", userID)
+	// Новый номер мог числиться в карточках арендатора — привязываем их
+	BindUserTenantRecords(user)
 	tokenStr, _ := h.generateAccessToken(user)
 	refreshToken, _ := h.createRefreshToken(user.ID)
 	c.JSON(http.StatusOK, gin.H{

@@ -25,6 +25,8 @@ func (h *TenantHandler) List(c *gin.Context) {
 	userID := c.GetString("userID")
 	var tenants []model.Tenant
 	database.DB.Where("owner_id = ?", userID).Find(&tenants)
+	BindTenantsByPhone(&tenants)
+	attachTenantAvatars(&tenants)
 	c.JSON(http.StatusOK, tenants)
 }
 
@@ -35,7 +37,83 @@ func (h *TenantHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
 		return
 	}
-	c.JSON(http.StatusOK, tenant)
+	one := []model.Tenant{tenant}
+	BindTenantsByPhone(&one)
+	attachTenantAvatars(&one)
+	c.JSON(http.StatusOK, one[0])
+}
+
+// BindTenantsByPhone — дозавязка записей, созданных ДО регистрации юзера:
+// карточку создали 1-го, человек зарегистрировался 5-го — при первом же
+// чтении телефон матчится с аккаунтом и user_id проставляется задним числом.
+func BindTenantsByPhone(tenants *[]model.Tenant) {
+	for i := range *tenants {
+		t := &(*tenants)[i]
+		if t.UserID != nil {
+			continue
+		}
+		uid := findUserByPhone(t.Phone)
+		if uid == "" {
+			continue
+		}
+		database.DB.Model(&model.Tenant{}).Where("id = ?", t.ID).Update("user_id", uid)
+		t.UserID = &uid
+		database.DB.Model(&model.User{}).Where("id = ?", uid).Update("is_tenant", true)
+	}
+}
+
+// BindUserTenantRecords — зеркальный случай: юзер зарегистрировался (или сменил
+// номер), а карточки арендатора с его телефоном созданы раньше и висят без user_id.
+// Вызывается ТОЛЬКО в двух событиях: регистрация (CallCheckStatus) и смена номера
+// (ConfirmPhoneChange) — карточки, созданные при уже зарегистрированном юзере,
+// биндятся в момент создания (Create), поэтому вечных проверок не нужно.
+func BindUserTenantRecords(user model.User) {
+	d := normalizePhoneDigits(user.Phone)
+	if len(d) != 11 {
+		return
+	}
+	var candidates []model.Tenant
+	database.DB.Where("user_id IS NULL AND phone LIKE ?", "%"+d[1:]).Limit(50).Find(&candidates)
+	bound := 0
+	for i := range candidates {
+		if normalizePhoneDigits(candidates[i].Phone) != d {
+			continue
+		}
+		database.DB.Model(&model.Tenant{}).Where("id = ?", candidates[i].ID).Update("user_id", user.ID)
+		bound++
+	}
+	if bound > 0 {
+		database.DB.Model(&model.User{}).Where("id = ?", user.ID).Update("is_tenant", true)
+	}
+}
+
+// attachTenantAvatars — аватарка арендатора живьём с его аккаунта (по user_id):
+// юзер сменил аву — обновилась везде; записи без связки остаются без авы
+func attachTenantAvatars(tenants *[]model.Tenant) {
+	ids := make([]string, 0, len(*tenants))
+	for i := range *tenants {
+		if (*tenants)[i].UserID != nil {
+			ids = append(ids, *(*tenants)[i].UserID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var users []model.User
+	database.DB.Select("id", "avatar_url").Where("id IN ?", ids).Find(&users)
+	byID := make(map[string]string, len(users))
+	for _, u := range users {
+		if u.AvatarURL != "" {
+			byID[u.ID] = u.AvatarURL
+		}
+	}
+	for i := range *tenants {
+		if (*tenants)[i].UserID != nil {
+			if av, ok := byID[*(*tenants)[i].UserID]; ok {
+				(*tenants)[i].AvatarURL = &av
+			}
+		}
+	}
 }
 
 func (h *TenantHandler) Create(c *gin.Context) {
@@ -47,8 +125,47 @@ func (h *TenantHandler) Create(c *gin.Context) {
 	}
 	tenant.BaseModel.ID = uuid.New().String()
 	tenant.OwnerID = userID
+	// Связка с аккаунтом: телефон арендатора совпадает с зарегистрированным
+	// пользователем → биндим user_id (иначе запись навсегда «безликая» карточка)
+	if tenant.UserID == nil {
+		if uid := findUserByPhone(tenant.Phone); uid != "" {
+			tenant.UserID = &uid
+			database.DB.Model(&model.User{}).Where("id = ?", uid).Update("is_tenant", true)
+		}
+	}
 	database.DB.Create(&tenant)
 	c.JSON(http.StatusCreated, tenant)
+}
+
+// normalizePhoneDigits: только цифры, 8… → 7… — единый вид для сравнения
+func normalizePhoneDigits(p string) string {
+	digits := make([]byte, 0, len(p))
+	for i := 0; i < len(p); i++ {
+		if p[i] >= '0' && p[i] <= '9' {
+			digits = append(digits, p[i])
+		}
+	}
+	if len(digits) == 11 && digits[0] == '8' {
+		digits[0] = '7'
+	}
+	return string(digits)
+}
+
+// findUserByPhone ищет зарегистрированного пользователя по телефону
+// (нормализуем оба номера: +7/8/пробелы не должны мешать совпадению)
+func findUserByPhone(phone string) string {
+	d := normalizePhoneDigits(phone)
+	if len(d) != 11 {
+		return ""
+	}
+	var users []model.User
+	database.DB.Where("phone LIKE ?", "%"+d[1:]).Limit(5).Find(&users)
+	for _, u := range users {
+		if normalizePhoneDigits(u.Phone) == d {
+			return u.ID
+		}
+	}
+	return ""
 }
 
 func (h *TenantHandler) Delete(c *gin.Context) {
@@ -61,12 +178,19 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// Снимаем арендатора со всех объектов, к которым он был привязан
+	// Снимаем арендатора со всех объектов, к которым он был привязан.
+	// Чистим ВСЁ: tenant_id + снимок tenant_info/phone, иначе карточка
+	// объекта продолжает показывать удалённого арендатора
 	var properties []model.Property
 	database.DB.Where("tenant_id = ?", id).Find(&properties)
 	for _, p := range properties {
 		database.DB.Model(&model.Property{}).Where("id = ?", p.ID).
-			Updates(map[string]interface{}{"tenant_id": nil, "status": "free"})
+			Updates(map[string]interface{}{
+				"tenant_id":   nil,
+				"tenant_info": nil,
+				"phone":       nil,
+				"status":      "free",
+			})
 	}
 
 	// Уведомляем пользователя, если арендатор привязан к аккаунту приложения
@@ -95,6 +219,63 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 
 	database.DB.Delete(&model.Tenant{}, "id = ?", id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// TenantBookingView — бронь арендатора с данными объекта (для карточки арендатора)
+type TenantBookingView struct {
+	PropertyID      string `json:"property_id"`
+	PropertyName    string `json:"property_name"`
+	PropertyAddress string `json:"property_address"`
+	PropertyPhoto   string `json:"property_photo"`
+	StartDate       string `json:"start_date"`
+	EndDate         string `json:"end_date"`
+}
+
+type TenantCardResponse struct {
+	model.Tenant
+	Bookings []TenantBookingView `json:"bookings"`
+}
+
+// Card — весь экран «Карточка арендатора» одним запросом: арендатор
+// (дозавязка + аватарка) и его брони с именами/фото объектов. Заменяет
+// клиентский веер tenant + properties + bookings×N.
+func (h *TenantHandler) Card(c *gin.Context) {
+	id := c.Param("id")
+	var tenant model.Tenant
+	if err := database.DB.First(&tenant, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	one := []model.Tenant{tenant}
+	BindTenantsByPhone(&one)
+	attachTenantAvatars(&one)
+
+	views := make([]TenantBookingView, 0)
+	var bookings []model.Booking
+	if err := database.DB.Where("tenant_id = ?", id).Order("start_date asc").Find(&bookings).Error; err == nil && len(bookings) > 0 {
+		propIDs := make([]string, 0, len(bookings))
+		for _, b := range bookings {
+			propIDs = append(propIDs, b.PropertyID)
+		}
+		var props []model.Property
+		database.DB.Preload("Photos").Where("id IN ?", propIDs).Find(&props)
+		byID := make(map[string]model.Property, len(props))
+		for _, p := range props {
+			byID[p.ID] = p
+		}
+		for _, b := range bookings {
+			v := TenantBookingView{PropertyID: b.PropertyID, StartDate: b.StartDate, EndDate: b.EndDate}
+			if p, ok := byID[b.PropertyID]; ok {
+				v.PropertyName = p.Name
+				v.PropertyAddress = p.Address
+				if len(p.Photos) > 0 {
+					v.PropertyPhoto = p.Photos[0].URL
+				}
+			}
+			views = append(views, v)
+		}
+	}
+	c.JSON(http.StatusOK, TenantCardResponse{Tenant: one[0], Bookings: views})
 }
 
 // AttachTenant — прикрепить арендатора к объекту.
@@ -154,12 +335,20 @@ func (h *TenantHandler) AttachToProperty(c *gin.Context) {
 		return
 	}
 
+	// Арендатор нужен сразу: обновляем снимок на объекте его живыми данными
+	var tenant model.Tenant
+	database.DB.First(&tenant, "id = ?", tenantID)
+
 	database.DB.Model(&model.Property{}).Where("id = ?", propertyID).
-		Updates(map[string]interface{}{"tenant_id": tenantID, "status": "occupied"})
+		Updates(map[string]interface{}{
+			"tenant_id":   tenantID,
+			"status":      "occupied",
+			"tenant_info": tenant.FullName,
+			"phone":       tenant.Phone,
+		})
 
 	// Push-уведомление арендатору о предоставлении доступа
-	var tenant model.Tenant
-	if err := database.DB.First(&tenant, "id = ?", tenantID).Error; err == nil && tenant.UserID != nil && h.fcm != nil {
+	if tenant.ID != "" && tenant.UserID != nil && h.fcm != nil {
 		var property model.Property
 		name := "объект"
 		if err := database.DB.First(&property, "id = ?", propertyID).Error; err == nil && property.Name != "" {
@@ -291,6 +480,14 @@ func (h *BookingHandler) Create(c *gin.Context) {
 	booking.CreatedBy = userID
 	if booking.Source == "" {
 		booking.Source = "manual"
+	}
+	// Бронь наследует арендатора объекта: клиент создаёт её сразу после
+	// прикрепления, и без tenant_id история аренды в карточке пустая
+	if booking.TenantID == nil || *booking.TenantID == "" {
+		var property model.Property
+		if err := database.DB.First(&property, "id = ?", propertyID).Error; err == nil && property.TenantID != nil {
+			booking.TenantID = property.TenantID
+		}
 	}
 	if err := database.DB.Create(&booking).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

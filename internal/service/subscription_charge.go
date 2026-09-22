@@ -46,16 +46,29 @@ func NewSubscriptionChargeService(fcm *FCMService) *SubscriptionChargeService {
 	return &SubscriptionChargeService{fcm: fcm, testInterval: test}
 }
 
-// Start запускает тикер: раз в минуту один индексированный запрос выбирает
-// пользователей, у кого next_charge_at <= now, и делает шаг колеса.
-// На 20k пользователей это ~14 строк в минуту — нагрузка копеечная.
+// Start запускает колесо списаний.
+//
+// Прод (списания в полночь): сервер спит до следующей полуночи и проверяет
+// один раз в сутки в момент списания — никакой минутной нагрузки.
+// Стартовый тик подтягивает просроченных (сервер мог стоять в полночь).
+//
+// Тест (CHARGE_INTERVAL): проверка раз в минуту, как раньше — минутный
+// интервал сопоставим с периодом проверки.
 func (s *SubscriptionChargeService) Start() {
 	go func() {
 		s.tick() // сразу при старте — подтянуть просроченных
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.tick()
+		if s.testInterval > 0 {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				s.tick()
+			}
+		} else {
+			for {
+				// +5с буфер от расхождения часов БД и сервера
+				time.Sleep(time.Until(s.nextMidnight(time.Now())) + 5*time.Second)
+				s.tick()
+			}
 		}
 	}()
 }

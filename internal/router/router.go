@@ -166,6 +166,8 @@ func Setup(cfg *config.Config) *gin.Engine {
 		// Tenants
 		protected.GET("/tenants", tenantHandler.List)
 		protected.GET("/tenants/:id", tenantHandler.Get)
+		// Карточка арендатора одним запросом (арендатор + брони с объектами)
+		protected.GET("/tenants/:id/card", tenantHandler.Card)
 		protected.POST("/tenants", tenantHandler.Create)
 		protected.DELETE("/tenants/:id", tenantHandler.Delete)
 

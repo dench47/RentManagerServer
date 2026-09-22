@@ -51,6 +51,10 @@ type Tenant struct {
 	Email        *string `gorm:"size:100" json:"email"`
 	Active       bool    `gorm:"default:true" json:"active"`
 	ServiceInfo  *string `gorm:"type:text" json:"service_info"`
+	// Аватарка НЕ хранится в записи: живьём берётся с аккаунта по user_id
+	// (решение Сергея/Дениса 2026-09-18: аву каждый ставит себе сам, как в мессенджерах;
+	// сервер подтягивает её по телефону — уникальному идентификатору)
+	AvatarURL *string `gorm:"-" json:"avatar_url"`
 }
 
 // Meter — прибор учёта
