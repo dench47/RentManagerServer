@@ -66,6 +66,7 @@ func InitPostgres(cfg config.DBConfig) {
 		&model.Property{},
 		&model.Photo{},
 		&model.Tenant{},
+		&model.TenantDocument{},
 		&model.Meter{},
 		&model.MeterReading{},
 		&model.Payment{},

@@ -57,6 +57,18 @@ type Tenant struct {
 	AvatarURL *string `gorm:"-" json:"avatar_url"`
 }
 
+// TenantDocument — документ, прикреплённый к карточке арендатора (скан паспорта,
+// фото документа, PDF). Сам файл лежит в S3 (folder=documents), в записи — метаданные:
+// имя, тип (JPG/PDF…), ссылка и размер. Дата добавления = CreatedAt.
+type TenantDocument struct {
+	BaseModel
+	TenantID string `gorm:"index;not null;size:36" json:"tenant_id"`
+	Name     string `gorm:"not null;size:255" json:"name"`
+	FileType string `gorm:"size:16" json:"file_type"`
+	URL      string `gorm:"not null;size:500" json:"url"`
+	Size     int64  `gorm:"default:0" json:"size"`
+}
+
 // Meter — прибор учёта
 type Meter struct {
 	BaseModel

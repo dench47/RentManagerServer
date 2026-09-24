@@ -17,9 +17,13 @@ import (
 
 type TenantHandler struct {
 	fcm *service.FCMService
+	// s3 — чистим файлы документов при их удалении (folder=documents)
+	s3 *service.S3Service
 }
 
-func NewTenantHandler(fcm *service.FCMService) *TenantHandler { return &TenantHandler{fcm: fcm} }
+func NewTenantHandler(fcm *service.FCMService, s3 *service.S3Service) *TenantHandler {
+	return &TenantHandler{fcm: fcm, s3: s3}
+}
 
 func (h *TenantHandler) List(c *gin.Context) {
 	userID := c.GetString("userID")
@@ -218,6 +222,18 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 		}
 	}
 
+	// Документы карточки: чистим записи и сами файлы в хранилище
+	var docs []model.TenantDocument
+	database.DB.Where("tenant_id = ?", id).Find(&docs)
+	for _, d := range docs {
+		if h.s3 != nil {
+			if key := h.s3.ExtractKey(d.URL); key != "" {
+				_ = h.s3.Delete(c, key)
+			}
+		}
+	}
+	database.DB.Where("tenant_id = ?", id).Delete(&model.TenantDocument{})
+
 	database.DB.Delete(&model.Tenant{}, "id = ?", id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
@@ -308,7 +324,8 @@ type TenantBookingView struct {
 
 type TenantCardResponse struct {
 	model.Tenant
-	Bookings []TenantBookingView `json:"bookings"`
+	Bookings  []TenantBookingView    `json:"bookings"`
+	Documents []model.TenantDocument `json:"documents"`
 }
 
 // Card — весь экран «Карточка арендатора» одним запросом: арендатор
@@ -350,7 +367,78 @@ func (h *TenantHandler) Card(c *gin.Context) {
 			views = append(views, v)
 		}
 	}
-	c.JSON(http.StatusOK, TenantCardResponse{Tenant: one[0], Bookings: views})
+	// Документы карточки (сканы/фото/файлы) — тем же запросом, что и брони
+	docs := make([]model.TenantDocument, 0)
+	database.DB.Where("tenant_id = ?", id).Order("created_at asc").Find(&docs)
+	c.JSON(http.StatusOK, TenantCardResponse{Tenant: one[0], Bookings: views, Documents: docs})
+}
+
+// AddDocument — прикрепить документ к карточке арендатора (канвас «14», 2983:42232).
+// Файл уже загружен в хранилище через POST /upload?folder=documents; сюда приходят
+// метаданные: имя (имя файла либо «Фото от DD.MM.YYYY» для камеры), тип (JPG/PDF…),
+// ссылка и размер. Дата добавления — CreatedAt.
+func (h *TenantHandler) AddDocument(c *gin.Context) {
+	id := c.Param("id")
+	userID := c.GetString("userID")
+	var tenant model.Tenant
+	if err := database.DB.First(&tenant, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	if tenant.OwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not owner"})
+		return
+	}
+	var req struct {
+		Name     string `json:"name" binding:"required"`
+		FileType string `json:"file_type"`
+		URL      string `json:"url" binding:"required"`
+		Size     int64  `json:"size"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	doc := model.TenantDocument{
+		TenantID: id,
+		Name:     req.Name,
+		FileType: req.FileType,
+		URL:      req.URL,
+		Size:     req.Size,
+	}
+	if err := database.DB.Create(&doc).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, doc)
+}
+
+// DeleteDocument — удаление документа: запись + файл в хранилище.
+func (h *TenantHandler) DeleteDocument(c *gin.Context) {
+	id := c.Param("id")
+	docID := c.Param("docId")
+	userID := c.GetString("userID")
+	var tenant model.Tenant
+	if err := database.DB.First(&tenant, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	if tenant.OwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not owner"})
+		return
+	}
+	var doc model.TenantDocument
+	if err := database.DB.First(&doc, "id = ? AND tenant_id = ?", docID, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		return
+	}
+	if h.s3 != nil {
+		if key := h.s3.ExtractKey(doc.URL); key != "" {
+			_ = h.s3.Delete(c, key)
+		}
+	}
+	database.DB.Delete(&model.TenantDocument{}, "id = ?", docID)
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
 // AttachTenant — прикрепить арендатора к объекту.

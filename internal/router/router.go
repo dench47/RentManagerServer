@@ -49,7 +49,7 @@ func Setup(cfg *config.Config) *gin.Engine {
 	handler.SeedDemoPromo()
 	propertyHandler := handler.NewPropertyHandler(s3Svc, chargeService)
 	meterHandler := handler.NewMeterHandler()
-	tenantHandler := handler.NewTenantHandler(fcmSvc)
+	tenantHandler := handler.NewTenantHandler(fcmSvc, s3Svc)
 	paymentHandler := handler.NewPaymentHandler()
 	subscriptionHandler := handler.NewSubscriptionHandler(chargeService)
 	requisiteHandler := handler.NewRequisiteHandler()
@@ -174,6 +174,9 @@ func Setup(cfg *config.Config) *gin.Engine {
 		protected.PUT("/tenants/:id", tenantHandler.Update)
 		protected.POST("/tenants", tenantHandler.Create)
 		protected.DELETE("/tenants/:id", tenantHandler.Delete)
+		// Документы карточки арендатора (канвас «14», 2983:42232): прикрепить/удалить
+		protected.POST("/tenants/:id/documents", tenantHandler.AddDocument)
+		protected.DELETE("/tenants/:id/documents/:docId", tenantHandler.DeleteDocument)
 
 		// Payment schedules
 		// Подписка: состояние баланса, демо-пополнение, промокоды
