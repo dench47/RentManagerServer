@@ -93,7 +93,10 @@ func BindUserTenantRecords(user model.User) {
 
 // attachTenantAvatars — данные арендатора живьём с его аккаунта (по user_id):
 // аватарка, почта и название компании (= «название юридического лица» из
-// настроек юзера). Юзер сменил данные — карточка у владельца обновится.
+// настроек юзера). Юзер зарегистрировался и заполнил свои поля — карточка у
+// владельца пополняется сама. ИМЯ и ТЕЛЕФОН — НЕ живые: имя landlord пишет
+// сам из своей тел. книги (юзер может оказаться «Юлей», а не «Васей»),
+// телефон — идентификатор (решение с Сергеем отдельно).
 func attachTenantAvatars(tenants *[]model.Tenant) {
 	ids := make([]string, 0, len(*tenants))
 	for i := range *tenants {
@@ -244,35 +247,30 @@ func (h *TenantHandler) Delete(c *gin.Context) {
 func (h *TenantHandler) Update(c *gin.Context) {
 	id := c.Param("id")
 	userID := c.GetString("userID")
-	var input model.Tenant
-	if err := c.ShouldBindJSON(&input); err != nil {
+	// Частичное обновление по ключам JSON (как у объектов): ОЧИСТКА поля —
+	// null/пустая строка в запросе обязана сохраняться. Биндинг в структуру
+	// терял нулевые значения: «стёр паспорт → поле на месте со старыми
+	// цифрами» — именно этот баг.
+	var payload map[string]interface{}
+	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	updates := map[string]interface{}{}
-	if input.FullName != "" {
-		updates["full_name"] = input.FullName
+	for _, key := range []string{"full_name", "company_name", "passport_data", "email", "service_info"} {
+		if v, ok := payload[key]; ok {
+			updates[key] = v
+		}
 	}
-	if input.CompanyName != nil {
-		updates["company_name"] = *input.CompanyName
-	}
-	if input.Email != nil {
-		updates["email"] = *input.Email
-	}
-	if input.Phone != "" {
-		updates["phone"] = input.Phone
-		if uid := findUserByPhone(input.Phone); uid != "" {
+	if input, ok := payload["phone"].(string); ok && input != "" {
+		updates["phone"] = input
+		// Телефон — идентификатор: смена перепривязывает аккаунт юзера
+		if uid := findUserByPhone(input); uid != "" {
 			updates["user_id"] = uid
 			database.DB.Model(&model.User{}).Where("id = ?", uid).Update("is_tenant", true)
 		} else {
 			updates["user_id"] = nil
 		}
-	}
-	if input.PassportData != nil {
-		updates["passport_data"] = *input.PassportData
-	}
-	if input.ServiceInfo != nil {
-		updates["service_info"] = *input.ServiceInfo
 	}
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update"})
