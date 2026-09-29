@@ -31,6 +31,7 @@ func (h *TenantHandler) List(c *gin.Context) {
 	database.DB.Where("owner_id = ?", userID).Find(&tenants)
 	BindTenantsByPhone(&tenants)
 	attachTenantAvatars(&tenants)
+	attachTenantRentInfo(&tenants, userID)
 	c.JSON(http.StatusOK, tenants)
 }
 
@@ -132,6 +133,121 @@ func attachTenantAvatars(tenants *[]model.Tenant) {
 		if u.LegalName != "" {
 			ln := u.LegalName
 			(*tenants)[i].CompanyName = &ln
+		}
+	}
+}
+
+// ---------- Состояние аренды для списков (канвас 13) ----------
+
+// rentStatusToday — «сегодня» в том же формате, в котором сервер хранит даты
+// (YYYY-MM-DD): сравнение ISO-строк лексикографически = сравнение дат.
+func rentStatusToday() string { return time.Now().Format("2006-01-02") }
+
+// leaseActive — аренда действует, если срок не указан или ещё не истёк.
+func leaseActive(end *string) bool {
+	if end == nil || *end == "" {
+		return true
+	}
+	return *end >= rentStatusToday()
+}
+
+// propStatus — состояние объекта: active (арендуют сейчас) или finished.
+func propStatus(p model.Property) string {
+	if leaseActive(p.RentEndDate) {
+		return "active"
+	}
+	return "finished"
+}
+
+// rentStatusRank — приоритет состояний, когда у человека несколько объектов
+// у одного владельца: active > booking > finished > none.
+func rentStatusRank(s string) int {
+	switch s {
+	case "active":
+		return 3
+	case "booking":
+		return 2
+	case "finished":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// attachTenantRentInfo — вторая строка списка арендаторов (макет, канвас 13):
+// «БЦ Легенда · до 23.12.2027» / «Апартаменты 24 · завершено 01.02.2024» /
+// «Аренда ещё не оформлялась». Собирается по объектам владельца: сначала
+// действующая привязка properties.tenant_id, затем брони (bookings).
+func attachTenantRentInfo(tenants *[]model.Tenant, ownerID string) {
+	if len(*tenants) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(*tenants))
+	for i := range *tenants {
+		ids = append(ids, (*tenants)[i].ID)
+	}
+	var props []model.Property
+	database.DB.Where("user_id = ?", ownerID).Find(&props)
+	byTenant := make(map[string]model.Property, len(props))
+	byPropID := make(map[string]model.Property, len(props))
+	propIDs := make([]string, 0, len(props))
+	for _, p := range props {
+		byPropID[p.ID] = p
+		propIDs = append(propIDs, p.ID)
+		if p.TenantID == nil || *p.TenantID == "" {
+			continue
+		}
+		prev, ok := byTenant[*p.TenantID]
+		if !ok || rentStatusRank(propStatus(prev)) < rentStatusRank(propStatus(p)) {
+			byTenant[*p.TenantID] = p
+		}
+	}
+	bookByTenant := make(map[string]model.Booking)
+	if len(propIDs) > 0 {
+		var bookings []model.Booking
+		database.DB.Where("property_id IN ? AND tenant_id IN ?", propIDs, ids).
+			Order("end_date desc").Find(&bookings)
+		for _, b := range bookings {
+			if b.TenantID == nil || *b.TenantID == "" {
+				continue
+			}
+			if _, ok := bookByTenant[*b.TenantID]; !ok {
+				bookByTenant[*b.TenantID] = b
+			}
+		}
+	}
+	for i := range *tenants {
+		t := &(*tenants)[i]
+		t.PropertyTitle = nil
+		t.RentEndDate = nil
+		t.RentStatus = "none"
+		if p, ok := byTenant[t.ID]; ok {
+			if p.Name != "" {
+				name := p.Name
+				t.PropertyTitle = &name
+			}
+			if p.RentEndDate != nil && *p.RentEndDate != "" {
+				end := *p.RentEndDate
+				t.RentEndDate = &end
+			}
+			t.RentStatus = propStatus(p)
+			continue
+		}
+		if b, ok := bookByTenant[t.ID]; ok {
+			if p, found := byPropID[b.PropertyID]; found && p.Name != "" {
+				name := p.Name
+				t.PropertyTitle = &name
+			}
+			if b.EndDate != "" {
+				end := b.EndDate
+				t.RentEndDate = &end
+			}
+			end := b.EndDate
+			if leaseActive(&end) {
+				t.RentStatus = "booking"
+			} else {
+				t.RentStatus = "finished"
+			}
 		}
 	}
 }
@@ -600,11 +716,13 @@ func NewUserHandler() *UserHandler { return &UserHandler{} }
 
 // UserPublic — публичное представление пользователя (поиск, список арендодателей)
 type UserPublic struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Phone      string `json:"phone"`
-	AvatarURL  string `json:"avatar_url"`
-	IsLandlord bool   `json:"is_landlord"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Phone       string `json:"phone"`
+	AvatarURL   string `json:"avatar_url"`
+	IsLandlord  bool   `json:"is_landlord"`
+	CompanyName string `json:"company_name"` // «название компании» из настроек юзера (legal_name)
+	RentStatus  string `json:"rent_status"`  // active / booking / finished / none — для фильтра
 }
 
 // Search — поиск пользователей по номеру телефона
@@ -620,41 +738,133 @@ func (h *UserHandler) Search(c *gin.Context) {
 	result := make([]UserPublic, 0, len(users))
 	for _, u := range users {
 		result = append(result, UserPublic{
-			ID:         u.ID,
-			Name:       u.Name,
-			Phone:      u.Phone,
-			AvatarURL:  u.AvatarURL,
-			IsLandlord: u.IsLandlord,
+			ID:          u.ID,
+			Name:        u.Name,
+			Phone:       u.Phone,
+			AvatarURL:   u.AvatarURL,
+			IsLandlord:  u.IsLandlord,
+			CompanyName: u.LegalName,
 		})
 	}
 	c.JSON(http.StatusOK, result)
 }
 
-// ListLandlordsForTenant — арендодатели (владельцы объектов), у которых арендует текущий пользователь
+// ListLandlordsForTenant — арендодатели (владельцы объектов), у которых арендует
+// текущий пользователь. Вторая строка в списке — «название компании» владельца
+// (legal_name из его настроек), rent_status — состояние аренды для фильтра.
 func (h *UserHandler) ListLandlordsForTenant(c *gin.Context) {
 	userID := c.GetString("userID")
-	var landlordIDs []string
-	database.DB.Model(&model.Property{}).
-		Joins("JOIN tenants ON tenants.id = properties.tenant_id").
-		Where("tenants.user_id = ?", userID).
-		Distinct().
-		Pluck("properties.user_id", &landlordIDs)
+	myTenantIDs := tenantIDsForUser(userID)
 
-	landlords := make([]UserPublic, 0)
-	if len(landlordIDs) > 0 {
-		var users []model.User
-		database.DB.Where("id IN ?", landlordIDs).Find(&users)
-		for _, u := range users {
-			landlords = append(landlords, UserPublic{
-				ID:         u.ID,
-				Name:       u.Name,
-				Phone:      u.Phone,
-				AvatarURL:  u.AvatarURL,
-				IsLandlord: true,
-			})
+	landlordIDs := make([]string, 0, 4)
+	if len(myTenantIDs) > 0 {
+		// текущие и прошлые аренды: объекты, привязанные к моим записям арендатора
+		var ownerIDs []string
+		database.DB.Model(&model.Property{}).Where("tenant_id IN ?", myTenantIDs).
+			Distinct().Pluck("user_id", &ownerIDs)
+		landlordIDs = append(landlordIDs, ownerIDs...)
+
+		// брони (в том числе по уже освобождённым объектам) — иначе владелец,
+		// с которым аренда завершилась, пропал бы из списка
+		var bookedPropIDs []string
+		database.DB.Model(&model.Booking{}).
+			Where("tenant_id IN ? OR created_by = ?", myTenantIDs, userID).
+			Distinct().Pluck("property_id", &bookedPropIDs)
+		if len(bookedPropIDs) > 0 {
+			var ids []string
+			database.DB.Model(&model.Property{}).Where("id IN ?", bookedPropIDs).
+				Distinct().Pluck("user_id", &ids)
+			landlordIDs = append(landlordIDs, ids...)
 		}
 	}
+
+	// уникальные владельцы с сохранением порядка
+	seen := make(map[string]bool, len(landlordIDs))
+	uniq := make([]string, 0, len(landlordIDs))
+	for _, id := range landlordIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+
+	landlords := make([]UserPublic, 0, len(uniq))
+	if len(uniq) == 0 {
+		c.JSON(http.StatusOK, landlords)
+		return
+	}
+	statuses := landlordRentStatuses(userID, myTenantIDs)
+	var users []model.User
+	database.DB.Where("id IN ?", uniq).Find(&users)
+	for _, u := range users {
+		landlords = append(landlords, UserPublic{
+			ID:          u.ID,
+			Name:        u.Name,
+			Phone:       u.Phone,
+			AvatarURL:   u.AvatarURL,
+			IsLandlord:  true,
+			CompanyName: u.LegalName,
+			RentStatus:  statuses[u.ID],
+		})
+	}
 	c.JSON(http.StatusOK, landlords)
+}
+
+// tenantIDsForUser — «мои» записи арендатора: по привязке к аккаунту и по телефону
+// (записи, созданные владельцем до регистрации, привязываются задним числом).
+func tenantIDsForUser(userID string) []string {
+	var me model.User
+	database.DB.First(&me, "id = ?", userID)
+	var ids []string
+	q := database.DB.Model(&model.Tenant{})
+	if d := normalizePhoneDigits(me.Phone); len(d) == 11 {
+		q.Where("user_id = ? OR phone LIKE ?", userID, "%"+d[1:]).Pluck("id", &ids)
+		return ids
+	}
+	q.Where("user_id = ?", userID).Pluck("id", &ids)
+	return ids
+}
+
+// landlordRentStatuses — состояние аренды по каждому владельцу: active (арендую
+// сейчас) / booking (с бронью) / finished (арендовал ранее) / none.
+func landlordRentStatuses(userID string, myTenantIDs []string) map[string]string {
+	out := make(map[string]string)
+	if len(myTenantIDs) == 0 {
+		return out
+	}
+	var props []model.Property
+	database.DB.Where("tenant_id IN ?", myTenantIDs).Find(&props)
+	byPropID := make(map[string]model.Property, len(props))
+	for _, p := range props {
+		byPropID[p.ID] = p
+		if st := propStatus(p); rentStatusRank(out[p.UserID]) < rentStatusRank(st) {
+			out[p.UserID] = st
+		}
+	}
+	var bookings []model.Booking
+	database.DB.Where("tenant_id IN ? OR created_by = ?", myTenantIDs, userID).
+		Order("end_date desc").Find(&bookings)
+	for _, b := range bookings {
+		p, ok := byPropID[b.PropertyID]
+		if !ok {
+			var one model.Property
+			if err := database.DB.First(&one, "id = ?", b.PropertyID).Error; err != nil {
+				continue
+			}
+			p = one
+			byPropID[b.PropertyID] = one
+		}
+		end := b.EndDate
+		st := "finished"
+		if leaseActive(&end) {
+			st = "booking"
+		}
+		if rentStatusRank(out[p.UserID]) < rentStatusRank(st) {
+			out[p.UserID] = st
+		}
+	}
+	return out
 }
 
 // normalizePhoneForSearch — приводит номер к национальным цифрам, чтобы поиск

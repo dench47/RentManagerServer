@@ -55,6 +55,12 @@ type Tenant struct {
 	// (решение Сергея/Дениса 2026-09-18: аву каждый ставит себе сам, как в мессенджерах;
 	// сервер подтягивает её по телефону — уникальному идентификатору)
 	AvatarURL *string `gorm:"-" json:"avatar_url"`
+	// Вторая строка списка арендаторов (макет, канвас 13): объект аренды и срок.
+	// Заполняется на чтение в attachTenantRentInfo, в БД не хранится.
+	PropertyTitle *string `gorm:"-" json:"property_title"`
+	RentEndDate   *string `gorm:"-" json:"rent_end_date"`
+	// Состояние аренды для фильтра: active / booking / finished / none
+	RentStatus string `gorm:"-" json:"rent_status"`
 }
 
 // TenantDocument — документ, прикреплённый к карточке арендатора (скан паспорта,
