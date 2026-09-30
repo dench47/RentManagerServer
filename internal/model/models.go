@@ -30,6 +30,9 @@ type Property struct {
 	Longitude      *float64 `json:"longitude"`
 	// IsPublished — опубликовано ли объявление объекта для арендаторов
 	IsPublished bool `gorm:"default:false" json:"is_published"`
+	// ProvidesDocuments — тумблер «Предоставляю отчётные документы»
+	// («Об объекте», канвас «17» 3970:83640): блок в карточке 3980:87127
+	ProvidesDocuments bool `gorm:"default:false" json:"provides_documents"`
 }
 
 // Photo — фотография объекта

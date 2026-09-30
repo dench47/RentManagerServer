@@ -175,11 +175,16 @@ func (h *PropertyHandler) Update(c *gin.Context) {
 		"floor", "floors_in_house", "description", "tenant_info", "service_info",
 		"phone", "wifi_password", "house_rules", "status", "rent_amount",
 		"rent_end_date", "contract_number", "contract_date", "tenant_id",
-		"latitude", "longitude", "is_published",
+		"latitude", "longitude", "is_published", "provides_documents",
 	}
 	updates := map[string]interface{}{}
 	for _, key := range allowed {
 		if v, ok := payload[key]; ok {
+			// Булев тумблер: serializeNulls шлёт null — записывать SQL NULL
+			// в bool-колонку нельзя, пропускаем (сброс = явный false)
+			if key == "provides_documents" && v == nil {
+				continue
+			}
 			updates[key] = v
 		}
 	}
