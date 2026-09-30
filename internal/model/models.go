@@ -59,6 +59,8 @@ type Tenant struct {
 	// Заполняется на чтение в attachTenantRentInfo, в БД не хранится.
 	PropertyTitle *string `gorm:"-" json:"property_title"`
 	RentEndDate   *string `gorm:"-" json:"rent_end_date"`
+	// Дата начала аренды по брони — для второй строки «Аренда с 25.09.2026 …»
+	RentStartDate *string `gorm:"-" json:"rent_start_date"`
 	// Состояние аренды для фильтра: active / booking / finished / none
 	RentStatus string `gorm:"-" json:"rent_status"`
 }

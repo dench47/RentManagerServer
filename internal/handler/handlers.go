@@ -220,6 +220,7 @@ func attachTenantRentInfo(tenants *[]model.Tenant, ownerID string) {
 		t := &(*tenants)[i]
 		t.PropertyTitle = nil
 		t.RentEndDate = nil
+		t.RentStartDate = nil
 		t.RentStatus = "none"
 		if p, ok := byTenant[t.ID]; ok {
 			if p.Name != "" {
@@ -241,6 +242,10 @@ func attachTenantRentInfo(tenants *[]model.Tenant, ownerID string) {
 			if b.EndDate != "" {
 				end := b.EndDate
 				t.RentEndDate = &end
+			}
+			if b.StartDate != "" {
+				start := b.StartDate
+				t.RentStartDate = &start
 			}
 			end := b.EndDate
 			if leaseActive(&end) {
@@ -723,6 +728,10 @@ type UserPublic struct {
 	IsLandlord  bool   `json:"is_landlord"`
 	CompanyName string `json:"company_name"` // «название компании» из настроек юзера (legal_name)
 	RentStatus  string `json:"rent_status"`  // active / booking / finished / none — для фильтра
+	// Вторая строка списка: «Арендую до 23.12.2027 · Квартира 12»
+	PropertyTitle string `json:"property_title"`
+	RentEndDate   string `json:"rent_end_date"`
+	RentStartDate string `json:"rent_start_date"`
 }
 
 // Search — поиск пользователей по номеру телефона
@@ -794,18 +803,22 @@ func (h *UserHandler) ListLandlordsForTenant(c *gin.Context) {
 		c.JSON(http.StatusOK, landlords)
 		return
 	}
-	statuses := landlordRentStatuses(userID, myTenantIDs)
+	infos := landlordRentInfo(userID, myTenantIDs)
 	var users []model.User
 	database.DB.Where("id IN ?", uniq).Find(&users)
 	for _, u := range users {
+		info := infos[u.ID]
 		landlords = append(landlords, UserPublic{
-			ID:          u.ID,
-			Name:        u.Name,
-			Phone:       u.Phone,
-			AvatarURL:   u.AvatarURL,
-			IsLandlord:  true,
-			CompanyName: u.LegalName,
-			RentStatus:  statuses[u.ID],
+			ID:            u.ID,
+			Name:          u.Name,
+			Phone:         u.Phone,
+			AvatarURL:     u.AvatarURL,
+			IsLandlord:    true,
+			CompanyName:   u.LegalName,
+			RentStatus:    info.Status,
+			PropertyTitle: info.PropertyTitle,
+			RentEndDate:   info.RentEndDate,
+			RentStartDate: info.RentStartDate,
 		})
 	}
 	c.JSON(http.StatusOK, landlords)
@@ -826,10 +839,19 @@ func tenantIDsForUser(userID string) []string {
 	return ids
 }
 
-// landlordRentStatuses — состояние аренды по каждому владельцу: active (арендую
-// сейчас) / booking (с бронью) / finished (арендовал ранее) / none.
-func landlordRentStatuses(userID string, myTenantIDs []string) map[string]string {
-	out := make(map[string]string)
+// landlordRent — состояние аренды и данные объекта по конкретному владельцу:
+// вторая строка списка «Арендодатели» — «Арендую до 23.12.2027 · Квартира 12».
+type landlordRent struct {
+	Status        string
+	PropertyTitle string
+	RentEndDate   string
+	RentStartDate string
+}
+
+// landlordRentInfo — состояние аренды по каждому владельцу: active (арендую
+// сейчас) / booking (аренда запланирована) / finished (арендовал ранее) / none.
+func landlordRentInfo(userID string, myTenantIDs []string) map[string]landlordRent {
+	out := make(map[string]landlordRent)
 	if len(myTenantIDs) == 0 {
 		return out
 	}
@@ -838,8 +860,17 @@ func landlordRentStatuses(userID string, myTenantIDs []string) map[string]string
 	byPropID := make(map[string]model.Property, len(props))
 	for _, p := range props {
 		byPropID[p.ID] = p
-		if st := propStatus(p); rentStatusRank(out[p.UserID]) < rentStatusRank(st) {
-			out[p.UserID] = st
+		cur := out[p.UserID]
+		st := propStatus(p)
+		if rentStatusRank(cur.Status) < rentStatusRank(st) {
+			cur.Status = st
+			cur.PropertyTitle = p.Name
+			cur.RentEndDate = ""
+			if p.RentEndDate != nil {
+				cur.RentEndDate = *p.RentEndDate
+			}
+			cur.RentStartDate = ""
+			out[p.UserID] = cur
 		}
 	}
 	var bookings []model.Booking
@@ -860,8 +891,13 @@ func landlordRentStatuses(userID string, myTenantIDs []string) map[string]string
 		if leaseActive(&end) {
 			st = "booking"
 		}
-		if rentStatusRank(out[p.UserID]) < rentStatusRank(st) {
-			out[p.UserID] = st
+		cur := out[p.UserID]
+		if rentStatusRank(cur.Status) < rentStatusRank(st) {
+			cur.Status = st
+			cur.PropertyTitle = p.Name
+			cur.RentEndDate = b.EndDate
+			cur.RentStartDate = b.StartDate
+			out[p.UserID] = cur
 		}
 	}
 	return out
