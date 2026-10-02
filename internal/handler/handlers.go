@@ -987,6 +987,7 @@ func (h *BookingHandler) Update(c *gin.Context) {
 		"end_date":   input.EndDate,
 		"source":     input.Source,
 		"tenant_id":  input.TenantID,
+		"guests":     input.Guests,
 	})
 	c.JSON(http.StatusOK, existing)
 }

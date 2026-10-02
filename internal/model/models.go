@@ -149,7 +149,9 @@ type Booking struct {
 	StartDate  string  `gorm:"not null;size:30" json:"start_date"` // YYYY-MM-DD
 	EndDate    string  `gorm:"not null;size:30" json:"end_date"`   // YYYY-MM-DD
 	Source     string  `gorm:"size:20;default:manual" json:"source"`
-	CreatedBy  string  `gorm:"index;not null;size:36" json:"created_by"`
+	// Guests — «Количество гостей» брони (шит «Арендатор и договор», 3803:68424)
+	Guests    *int   `json:"guests"`
+	CreatedBy string `gorm:"index;not null;size:36" json:"created_by"`
 }
 
 // Chat — чат
