@@ -452,6 +452,7 @@ type TenantCardResponse struct {
 // клиентский веер tenant + properties + bookings×N.
 func (h *TenantHandler) Card(c *gin.Context) {
 	id := c.Param("id")
+	userID := c.GetString("userID")
 	var tenant model.Tenant
 	if err := database.DB.First(&tenant, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
@@ -463,7 +464,7 @@ func (h *TenantHandler) Card(c *gin.Context) {
 
 	views := make([]TenantBookingView, 0)
 	var bookings []model.Booking
-	if err := database.DB.Where("tenant_id = ?", id).Order("start_date asc").Find(&bookings).Error; err == nil && len(bookings) > 0 {
+	if err := database.DB.Joins("JOIN properties p ON p.id = bookings.property_id").Where("bookings.tenant_id = ? AND p.user_id = ?", id, userID).Order("bookings.start_date asc").Find(&bookings).Error; err == nil && len(bookings) > 0 {
 		propIDs := make([]string, 0, len(bookings))
 		for _, b := range bookings {
 			propIDs = append(propIDs, b.PropertyID)
@@ -930,6 +931,23 @@ func normalizePhoneForSearch(raw string) string {
 
 // ---------------- Booking ----------------
 
+// bookingOverlaps — есть ли у этого арендатора на этом объекте бронь,
+// пересекающаяся с периодом. «Встык» (конец = началу следующей)
+// пересечением НЕ считается: гость выезжает до 12:00, новый заезжает после 14:00 —
+// так работают отели и посуточные, и помесячные меняют арендатора в один день.
+// А вот две брони ОДНОГО арендатора на один объект с нахлёстом — каша в карточке.
+func bookingOverlaps(propertyID, tenantID, startDate, endDate, excludeID string) bool {
+	if tenantID == "" || startDate == "" || endDate == "" {
+		return false
+	}
+	var n int64
+	database.DB.Model(&model.Booking{}).
+		Where("property_id = ? AND tenant_id = ? AND id <> ?", propertyID, tenantID, excludeID).
+		Where("start_date < ? AND ? < end_date", endDate, startDate).
+		Count(&n)
+	return n > 0
+}
+
 type BookingHandler struct{}
 
 func NewBookingHandler() *BookingHandler { return &BookingHandler{} }
@@ -963,6 +981,11 @@ func (h *BookingHandler) Create(c *gin.Context) {
 			booking.TenantID = property.TenantID
 		}
 	}
+	if booking.TenantID != nil &&
+		bookingOverlaps(propertyID, *booking.TenantID, booking.StartDate, booking.EndDate, booking.ID) {
+		c.JSON(http.StatusConflict, gin.H{"error": "У арендатора уже есть бронь на этот объект в эти даты"})
+		return
+	}
 	if err := database.DB.Create(&booking).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -982,13 +1005,31 @@ func (h *BookingHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	database.DB.Model(&existing).Updates(map[string]interface{}{
-		"start_date": input.StartDate,
-		"end_date":   input.EndDate,
-		"source":     input.Source,
-		"tenant_id":  input.TenantID,
-		"guests":     input.Guests,
-	})
+	updates := map[string]interface{}{}
+	if input.StartDate != "" {
+		updates["start_date"] = input.StartDate
+	}
+	if input.EndDate != "" {
+		updates["end_date"] = input.EndDate
+	}
+	if input.Source != "" {
+		updates["source"] = input.Source
+	}
+	if input.Guests != nil {
+		updates["guests"] = input.Guests
+	}
+	// tenant_id НЕ затираем: клиент шлёт только то, что меняет
+	// (правка «гостей» без tenant_id раньше обнуляла привязку,
+	// и в карточке объекта пропадала аватарка)
+	if input.TenantID != nil {
+		updates["tenant_id"] = input.TenantID
+	}
+	if existing.TenantID != nil &&
+		bookingOverlaps(existing.PropertyID, *existing.TenantID, input.StartDate, input.EndDate, existing.ID) {
+		c.JSON(http.StatusConflict, gin.H{"error": "У арендатора уже есть бронь на этот объект в эти даты"})
+		return
+	}
+	database.DB.Model(&existing).Updates(updates)
 	c.JSON(http.StatusOK, existing)
 }
 
